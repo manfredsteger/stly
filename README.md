@@ -14,15 +14,25 @@ STL Editor Pro is a modern, web-based full-stack application for viewing, analyz
 
 ---
 
-## Local Deployment with Docker 🐳 (Recommended)
+## Local Deployment with Docker 🐳 (Zero-Conf)
 
-The application is containerized and comes with a `docker-compose.yml` file for quick, reproducible local deployments.
+The application is containerized and comes with a `docker-compose.yml` file for quick, reproducible local deployments. Out of the box, it requires zero configuration to start.
 
 ### 1. Prerequisites
 - Install [Docker Desktop](https://docs.docker.com/get-docker/) (or Docker Engine + Docker Compose).
 
-### 2. Environment Setup
-To utilize the AI analysis feature, you need to provide a Gemini API Key.
+### 2. Build & Run
+From the root of the project, run:
+```bash
+docker compose up --build
+```
+*(To run it safely in the background as a daemon, use `docker compose up -d --build`)*
+
+### 3. Access the App
+Open your web browser and navigate to: **http://localhost:3000**
+
+### 4. Optional: Enable AI Analysis Features
+To utilize the AI analysis feature, you can provide a Gemini API Key:
 1. Copy the example environment file:
    ```bash
    cp .env.example .env
@@ -31,16 +41,7 @@ To utilize the AI analysis feature, you need to provide a Gemini API Key.
    ```env
    GEMINI_API_KEY=your_actual_api_key_here
    ```
-
-### 3. Build & Run
-From the root of the project, run:
-```bash
-docker compose up --build
-```
-*(To run it safely in the background as a daemon, use `docker compose up -d --build`)*
-
-### 4. Access the App
-Open your web browser and navigate to: **http://localhost:3000**
+3. Restart your container: `docker compose up -d`
 
 ### 5. Stopping the Container
 Press `Ctrl+C` in your terminal, or if running in the background, execute:

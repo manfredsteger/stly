@@ -9,18 +9,22 @@ async function startServer() {
 
   app.use(express.json());
 
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
-  });
-
   // API Route for AI print check proxy
   app.post("/api/analyze", async (req, res) => {
     try {
+      if (!process.env.GEMINI_API_KEY) {
+        return res.json({ analysis: "Kein API Key konfiguriert. Bitte setzen Sie GEMINI_API_KEY." });
+      }
+
+      const ai = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
       const { stats } = req.body;
       if (!stats) {
         return res.status(400).json({ error: "Mesh stats are required" });
