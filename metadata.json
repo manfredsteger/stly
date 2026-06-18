@@ -1,5 +1,6 @@
 {
   "name": "STL Editor Pro",
   "description": "A high-performance web-based STL editor and visualizer inspired by numpy-stl. Edit, transform, and analyze 3D mesh files with ease.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

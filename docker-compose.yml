@@ -1,0 +1,26 @@
+services:
+  stl-editor-pro:
+    container_name: stl-editor-pro
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stl-editor-pro:latest
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - stl_network
+
+networks:
+  stl_network:
+    driver: bridge

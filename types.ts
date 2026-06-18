@@ -1,4 +1,6 @@
 
+import * as THREE from 'three';
+
 export interface Vector3 {
   x: number;
   y: number;
@@ -14,11 +16,10 @@ export interface TransformationState {
 export interface SliceState {
   enabled: boolean;
   mode: 'single' | 'window';
-  axis: 'x' | 'y' | 'z';
-  singlePos: number; // For single plane mode
-  start: number;     // For window mode
-  end: number;       // For window mode
-  showMiddle: boolean; // For window mode: show middle vs show ends
+  position: Vector3;
+  rotation: Vector3;
+  windowSize: number;
+  showMiddle: boolean;
 }
 
 export interface MeshStats {
@@ -32,13 +33,40 @@ export interface MeshStats {
   triangleCount: number;
 }
 
-export interface AppState {
-  isLoaded: boolean;
-  fileName: string | null;
+export interface SceneObject {
+  id: string;
+  name: string;
+  geometry: THREE.BufferGeometry;
   transform: TransformationState;
-  slice: SliceState;
-  stats: MeshStats | null;
-  viewMode: 'wireframe' | 'solid' | 'points';
+  visible: boolean;
   color: string;
+  stats: MeshStats;
+}
+
+export interface SplitState {
+  enabled: boolean;
+  position: Vector3;
+  rotation: Vector3;
+  jointType: 'flat' | 'dovetail' | 'puzzle';
+  jointSize: number;
+  jointDepth: number;
+  clearance: number;
+}
+
+export interface ExtendState {
+  enabled: boolean;
+  position: Vector3;
+  rotation: Vector3;
+  amount: number;
+}
+
+export interface AppState {
+  objects: SceneObject[];
+  selectedId: string | null;
+  slice: SliceState;
+  split: SplitState;
+  extend: ExtendState;
+  viewMode: 'wireframe' | 'solid' | 'points' | 'transparent';
+  globalColor: string;
   aiAnalysis?: string;
 }
