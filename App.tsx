@@ -33,12 +33,19 @@ const INITIAL_EXTEND: ExtendState = {
   amount: 20
 };
 
+const INITIAL_MEASURE = {
+  enabled: false,
+  p1: null,
+  p2: null,
+};
+
 const INITIAL_STATE: AppState = {
   objects: [],
   selectedId: null,
   slice: INITIAL_SLICE,
   split: INITIAL_SPLIT,
   extend: INITIAL_EXTEND,
+  measure: INITIAL_MEASURE,
   viewMode: 'solid',
   globalColor: '#3b82f6',
 };
@@ -504,6 +511,22 @@ const App: React.FC = () => {
       link.click();
   };
 
+  const handleMeasureClick = (point: THREE.Vector3) => {
+    setState(prev => {
+        if (!prev.measure.enabled) return prev;
+        
+        let newMeasure = { ...prev.measure };
+        if (!newMeasure.p1 || (newMeasure.p1 && newMeasure.p2)) {
+            newMeasure.p1 = point;
+            newMeasure.p2 = null;
+        } else if (newMeasure.p1 && !newMeasure.p2) {
+            newMeasure.p2 = point;
+        }
+        
+        return { ...prev, measure: newMeasure };
+    });
+  };
+
   return (
     <div 
       className="flex h-screen w-screen bg-slate-950 text-slate-50 overflow-hidden relative"
@@ -560,6 +583,7 @@ const App: React.FC = () => {
             onPerformExtend={handlePerformExtend}
             onMergeObjects={handleMergeObjects}
             onViewModeChange={(mode) => setState(prev => ({ ...prev, viewMode: mode }))}
+            onMeasureChange={(measure) => setState(prev => ({ ...prev, measure }))}
             onExportCombined={handleExport}
             onExportSeparate={handleExportSeparate}
             onSaveHistory={pushHistory}
@@ -613,8 +637,22 @@ const App: React.FC = () => {
             </div>
         </div>
 
-        <div className="w-full h-full">
-           <Viewer state={state} />
+        <div className="w-full h-full relative">
+           <Viewer state={state} onMeasureClick={handleMeasureClick} />
+           
+           {state.measure.enabled && state.measure.p1 && state.measure.p2 && (
+             <div className="absolute top-10 left-1/2 -translate-x-1/2 z-30 bg-slate-900/90 backdrop-blur border border-cyan-500/50 px-6 py-3 rounded-2xl shadow-2xl flex flex-col items-center animate-in fade-in slide-in-from-top-4">
+                <span className="text-slate-400 text-[10px] uppercase font-bold tracking-widest mb-1">Distanz</span>
+                <span className="font-mono text-cyan-400 text-2xl font-bold">
+                    {Math.sqrt(
+                       Math.pow(state.measure.p2.x - state.measure.p1.x, 2) +
+                       Math.pow(state.measure.p2.y - state.measure.p1.y, 2) +
+                       Math.pow(state.measure.p2.z - state.measure.p1.z, 2)
+                    ).toFixed(2)} mm
+                </span>
+             </div>
+           )}
+
            {state.objects.length === 0 && (
                <div className="absolute inset-0 flex flex-col items-center justify-center space-y-6 pointer-events-none">
                    <div className="relative">

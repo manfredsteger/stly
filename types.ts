@@ -60,12 +60,19 @@ export interface ExtendState {
   amount: number;
 }
 
+export interface MeasureState {
+  enabled: boolean;
+  p1: Vector3 | null;
+  p2: Vector3 | null;
+}
+
 export interface AppState {
   objects: SceneObject[];
   selectedId: string | null;
   slice: SliceState;
   split: SplitState;
   extend: ExtendState;
+  measure: MeasureState;
   viewMode: 'wireframe' | 'solid' | 'points' | 'transparent';
   globalColor: string;
   aiAnalysis?: string;

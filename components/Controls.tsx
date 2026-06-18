@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { AppState, SceneObject, SliceState, SplitState } from '../types';
 import { 
   Download, Trash2, Box, Layers, Move, RefreshCw, Scissors, Sparkles, 
-  Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package
+  Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler
 } from 'lucide-react';
 
 interface ControlsProps {
@@ -21,6 +21,7 @@ interface ControlsProps {
   onPerformExtend: () => void;
   onMergeObjects: () => void;
   onViewModeChange: (mode: AppState['viewMode']) => void;
+  onMeasureChange: (measure: import('../types').MeasureState) => void;
   onExportCombined: () => void;
   onExportSeparate: () => void;
   onAiAnalyze: () => void;
@@ -407,7 +408,41 @@ const Controls: React.FC<ControlsProps> = (props) => {
         </ControlGroup>
       )}
 
-      {/* 5. DARSTELLUNG */}
+      {/* 5. MEASURE */}
+      <ControlGroup title="Messen" icon={<Ruler size={14} />}>
+        <div className="flex items-center justify-between mb-4">
+            <span className="text-[11px] text-slate-300 font-medium">Distanz messen</span>
+            <button 
+                onClick={() => props.onMeasureChange({ ...state.measure, enabled: !state.measure.enabled, p1: null, p2: null })}
+                className={`w-8 h-4 rounded-full transition-colors relative ${state.measure.enabled ? 'bg-cyan-600' : 'bg-slate-700'}`}
+            >
+                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.measure.enabled ? 'left-4.5' : 'left-0.5'}`} />
+            </button>
+        </div>
+        {state.measure.enabled && (
+           <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+             <div className="p-3 bg-slate-900/30 rounded-lg border border-slate-700/30">
+                <p className="text-[10px] text-slate-400 mb-2">
+                  Klicken Sie auf zwei Punkte im 3D-Modell, um die Distanz zu messen.
+                </p>
+                {state.measure.p1 && state.measure.p2 && (
+                   <div className="mt-3 border-t border-slate-700/50 pt-3">
+                      <span className="text-slate-500 block mb-0.5 text-[10px]">Euklidische Distanz</span>
+                      <span className="font-mono text-cyan-400 font-semibold text-lg">
+                        {Math.sqrt(
+                           Math.pow(state.measure.p2.x - state.measure.p1.x, 2) +
+                           Math.pow(state.measure.p2.y - state.measure.p1.y, 2) +
+                           Math.pow(state.measure.p2.z - state.measure.p1.z, 2)
+                        ).toFixed(2)} mm
+                      </span>
+                   </div>
+                )}
+             </div>
+           </div>
+        )}
+      </ControlGroup>
+
+      {/* 6. DARSTELLUNG */}
       <ControlGroup title="Visuals" icon={<Layers size={14} />}>
         <div className="grid grid-cols-4 gap-1">
           {(['solid', 'wireframe', 'points', 'transparent'] as const).map(m => (
