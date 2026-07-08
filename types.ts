@@ -10,7 +10,7 @@ export interface Vector3 {
 export interface TransformationState {
   position: Vector3;
   rotation: Vector3;
-  scale: number;
+  scale: Vector3;
 }
 
 export interface SliceState {
@@ -64,16 +64,40 @@ export interface MeasureState {
   enabled: boolean;
   p1: Vector3 | null;
   p2: Vector3 | null;
+  unit: 'mm' | 'in';
+}
+
+export interface AlignState {
+  enabled: boolean;
+  step: 'select_source' | 'select_target';
+  source?: {
+    objectId: string;
+    point: Vector3;
+    normal: Vector3;
+  };
+}
+
+export interface BooleanState {
+  enabled: boolean;
+  operation: 'subtract' | 'intersect' | 'union';
+  targetId: string | null;
+  cutterId: string | null;
+  preview: boolean;
 }
 
 export interface AppState {
   objects: SceneObject[];
+  selectedIds: string[];
   selectedId: string | null;
   slice: SliceState;
   split: SplitState;
   extend: ExtendState;
   measure: MeasureState;
+  align: AlignState;
+  boolean: BooleanState;
   viewMode: 'wireframe' | 'solid' | 'points' | 'transparent';
   globalColor: string;
   aiAnalysis?: string;
+  transformMode: 'translate' | 'rotate' | 'scale';
+  snapToEdge: boolean;
 }

@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { AppState, SceneObject, SliceState, SplitState } from '../types';
+import { primitiveNames, PrimitiveType } from '../services/primitiveService';
 import { 
   Download, Trash2, Box, Layers, Move, RefreshCw, Scissors, Sparkles, 
   Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler
@@ -8,11 +9,12 @@ import {
 
 interface ControlsProps {
   state: AppState;
-  onSelect: (id: string | null) => void;
+  onSelect: (id: string | 'all' | null, multiSelect?: boolean) => void;
   onUpdateObject: (id: string, updates: Partial<SceneObject>) => void;
   onDeleteObject: (id: string) => void;
   onDuplicateObject: (id: string) => void;
   onMirrorObject: (id: string, axis: 'x' | 'y' | 'z') => void;
+  onApplyScale: (id: string) => void;
   onSliceChange: (slice: SliceState) => void;
   onBakeSlice: () => void;
   onSplitChange: (split: SplitState) => void;
@@ -20,10 +22,19 @@ interface ControlsProps {
   onExtendChange: (extend: import('../types').ExtendState) => void;
   onPerformExtend: () => void;
   onMergeObjects: () => void;
+  onSubtractObjects: () => void;
+  onBooleanChange: (booleanState: import('../types').BooleanState) => void;
+  onPerformBoolean: () => void;
+  onAddPrimitive: (type: import('../services/primitiveService').PrimitiveType) => void;
+  onEraseWithObject: () => void;
   onViewModeChange: (mode: AppState['viewMode']) => void;
   onMeasureChange: (measure: import('../types').MeasureState) => void;
-  onExportCombined: () => void;
-  onExportSeparate: () => void;
+  onAlignChange: (align: import('../types').AlignState) => void;
+  onTransformModeChange: (mode: 'translate' | 'rotate') => void;
+  onSnapToEdgeChange: (snap: boolean) => void;
+  onSnapCentroids: () => void;
+  onExportCombined: (format: 'stl' | 'obj' | 'gltf') => void;
+  onExportSeparate: (format: 'stl' | 'obj' | 'gltf') => void;
   onAiAnalyze: () => void;
   onSaveHistory: () => void;
 }
@@ -67,8 +78,9 @@ const Slider: React.FC<{ label: string; value: number; min: number; max: number;
 );
 
 const Controls: React.FC<ControlsProps> = (props) => {
-  const { state, onSelect, onUpdateObject, onDeleteObject, onDuplicateObject, onSliceChange, onBakeSlice, onSplitChange, onPerformSplit, onViewModeChange, onExportCombined, onExportSeparate, onAiAnalyze, onSaveHistory } = props;
+  const { state, onSelect, onUpdateObject, onDeleteObject, onDuplicateObject, onSliceChange, onApplyScale, onBakeSlice, onSplitChange, onPerformSplit, onViewModeChange, onExportCombined, onExportSeparate, onAiAnalyze, onSaveHistory } = props;
   const [analyzing, setAnalyzing] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'stl' | 'obj' | 'gltf'>('stl');
   const selectedObj = state.objects.find(o => o.id === state.selectedId);
 
   const combinedStats = React.useMemo(() => {
@@ -93,7 +105,7 @@ const Controls: React.FC<ControlsProps> = (props) => {
             THREE.MathUtils.degToRad(obj.transform.rotation.y),
             THREE.MathUtils.degToRad(obj.transform.rotation.z)
         );
-        mesh.scale.setScalar(obj.transform.scale);
+        mesh.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
         mesh.updateMatrixWorld(true);
         
         meshBox.applyMatrix4(mesh.matrixWorld);
@@ -134,14 +146,14 @@ const Controls: React.FC<ControlsProps> = (props) => {
           {state.objects.map(obj => (
             <div 
               key={obj.id} 
-              onClick={() => onSelect(obj.id)}
+              onClick={(e) => onSelect(obj.id, e.shiftKey || e.ctrlKey || e.metaKey)}
               className={`group flex items-center justify-between p-2 rounded-lg cursor-pointer border transition-all ${
-                state.selectedId === obj.id ? 'bg-blue-600/20 border-blue-500/50' : 'bg-slate-900/30 border-transparent hover:border-slate-700'
+                (state.selectedIds || []).includes(obj.id) ? 'bg-blue-600/20 border-blue-500/50' : 'bg-slate-900/30 border-transparent hover:border-slate-700'
               }`}
             >
               <div className="flex items-center gap-2 truncate">
-                <Box size={14} className={state.selectedId === obj.id ? 'text-blue-400' : 'text-slate-500'} />
-                <span className={`text-[11px] truncate ${state.selectedId === obj.id ? 'text-blue-100 font-bold' : (!obj.visible ? 'text-slate-600 line-through' : 'text-slate-400')}`}>
+                <Box size={14} className={(state.selectedIds || []).includes(obj.id) ? 'text-blue-400' : 'text-slate-500'} />
+                <span className={`text-[11px] truncate ${(state.selectedIds || []).includes(obj.id) ? 'text-blue-100 font-bold' : (!obj.visible ? 'text-slate-600 line-through' : 'text-slate-400')}`}>
                   {obj.name}
                 </span>
               </div>
@@ -176,11 +188,173 @@ const Controls: React.FC<ControlsProps> = (props) => {
         </button>
       </ControlGroup>
 
+      {/* NEW: PRIMITIVES */}
+      <ControlGroup title="Formen einfügen (Radiergummi/CSG)" icon={<Plus size={14} />}>
+        <div className="grid grid-cols-2 gap-1 max-h-32 overflow-y-auto pr-1 scrollbar-hide">
+            {(Object.keys(primitiveNames) as PrimitiveType[]).map(type => (
+                <button
+                    key={type}
+                    onClick={() => props.onAddPrimitive(type)}
+                    className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] text-left transition-colors truncate"
+                    title={primitiveNames[type]}
+                >
+                    + {primitiveNames[type]}
+                </button>
+            ))}
+        </div>
+      </ControlGroup>
+
       {/* 2. TRANSFORM FOR SELECTED */}
-      {selectedObj && (
+      {(state.selectedIds || []).length === 2 && (
+        <ControlGroup title="Zwei Objekte ausgewählt" icon={<Layers size={14} />}>
+            <p className="text-[10px] text-slate-400 mb-2">
+                Sie können die Zentren der Bounding-Boxen beider Objekte aufeinander ausrichten oder Objekte voneinander abziehen (Durchbohren).
+            </p>
+            <div className="flex flex-col gap-2">
+                <button 
+                    onClick={props.onSnapCentroids}
+                    className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
+                >
+                    <Move size={12} />
+                    Zentren zusammenfügen
+                </button>
+                <div className="border border-slate-700/50 rounded-lg p-2 bg-slate-900/30">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold text-slate-300">Boolean (CSG)</span>
+                        <input 
+                            type="checkbox" 
+                            checked={state.boolean?.enabled || false}
+                            onChange={(e) => {
+                                const selectedIds = state.selectedIds || [];
+                                props.onBooleanChange({ 
+                                    ...(state.boolean || { operation: 'subtract', preview: true }), 
+                                    enabled: e.target.checked,
+                                    targetId: selectedIds[0] || null,
+                                    cutterId: selectedIds[1] || null
+                                });
+                            }}
+                            className="w-3 h-3"
+                        />
+                    </div>
+                    {state.boolean?.enabled && (
+                        <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-slate-400">Operation:</span>
+                                <select 
+                                    value={state.boolean.operation}
+                                    onChange={(e) => props.onBooleanChange({ ...state.boolean, operation: e.target.value as any })}
+                                    className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-slate-200"
+                                >
+                                    <option value="subtract">Ausschneiden (Subtract)</option>
+                                    <option value="intersect">Schnittmenge (Intersect)</option>
+                                    <option value="union">Vereinigen (Union)</option>
+                                </select>
+                            </div>
+                            <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-slate-400">Ziel (Bleibt erhalten):</span>
+                                <span className="truncate w-24 text-right">{state.objects.find(o => o.id === state.boolean.targetId)?.name || '-'}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-slate-400">Werkzeug (Schneidet):</span>
+                                <span className="truncate w-24 text-right">{state.objects.find(o => o.id === state.boolean.cutterId)?.name || '-'}</span>
+                            </div>
+                            <button 
+                                onClick={() => {
+                                    props.onBooleanChange({
+                                        ...state.boolean,
+                                        targetId: state.boolean.cutterId,
+                                        cutterId: state.boolean.targetId
+                                    });
+                                }}
+                                className="w-full py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] text-slate-300 transition-colors"
+                            >
+                                Ziel / Werkzeug tauschen
+                            </button>
+                            <label className="flex items-center gap-2 text-[9px] text-slate-400">
+                                <input 
+                                    type="checkbox" 
+                                    checked={state.boolean.preview} 
+                                    onChange={(e) => props.onBooleanChange({ ...state.boolean, preview: e.target.checked })}
+                                    className="w-2.5 h-2.5"
+                                />
+                                Preview anzeigen
+                            </label>
+                            <button 
+                                onClick={props.onPerformBoolean}
+                                className="w-full py-2 mt-1 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
+                            >
+                                <Scissors size={12} />
+                                Anwenden
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </ControlGroup>
+      )}
+
+      {selectedObj && (state.selectedIds || []).length <= 1 && (
         <ControlGroup title={`Transform: ${selectedObj.name}`} icon={<Move size={14} />}>
-           <Slider label="Skalierung" value={selectedObj.transform.scale} min={0.1} max={5} step={0.01} 
-              onPointerDown={onSaveHistory} onChange={(v) => onUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: v } })} />
+           
+           <div className="flex bg-slate-900/50 p-1 rounded-lg gap-1 border border-slate-700/30 mb-3">
+              <button onClick={() => props.onTransformModeChange('translate')} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.transformMode==='translate' ? 'bg-blue-600 text-white':'text-slate-500 hover:text-slate-300'}`}>VERSCHIEBEN</button>
+              <button onClick={() => props.onTransformModeChange('rotate')} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.transformMode==='rotate' ? 'bg-blue-600 text-white':'text-slate-500 hover:text-slate-300'}`}>DREHEN</button>
+              <button onClick={() => props.onTransformModeChange('scale')} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.transformMode==='scale' ? 'bg-blue-600 text-white':'text-slate-500 hover:text-slate-300'}`}>SKALIEREN</button>
+           </div>
+           
+           {state.transformMode === 'translate' && (
+              <div className="flex items-center justify-between mb-4 p-2 bg-slate-800/50 rounded-lg">
+                 <span className="text-[10px] text-amber-400 font-medium">Magnetisch an andere Kanten (Snap)</span>
+                 <button 
+                     onClick={() => props.onSnapToEdgeChange(!state.snapToEdge)}
+                     className={`w-6 h-3 rounded-full transition-colors relative ${state.snapToEdge ? 'bg-amber-600' : 'bg-slate-700'}`}
+                 >
+                     <div className={`absolute top-0.5 w-2 h-2 bg-white rounded-full transition-all ${state.snapToEdge ? 'left-3.5' : 'left-0.5'}`} />
+                 </button>
+              </div>
+           )}
+
+           <div className="mb-3 p-2 bg-slate-900/50 rounded-lg border border-slate-700/50">
+              <span className="text-[10px] text-slate-400 font-bold mb-1 block">Größe (mm) / Skalierung</span>
+              <div className="grid grid-cols-3 gap-1">
+                  <label className="flex flex-col">
+                      <span className="text-[8px] text-slate-500">X (Breite)</span>
+                      <input type="number" step="0.1" 
+                             value={(selectedObj.stats.boundingBox.size.x * selectedObj.transform.scale.x).toFixed(2)}
+                             onChange={(e) => {
+                                 const v = parseFloat(e.target.value);
+                                 if (!isNaN(v) && v > 0) {
+                                     onUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, x: v / (selectedObj.stats.boundingBox.size.x || 1) } } });
+                                 }
+                             }}
+                             className="bg-slate-800 text-[10px] text-slate-200 p-1 rounded border border-slate-700 w-full" />
+                  </label>
+                  <label className="flex flex-col">
+                      <span className="text-[8px] text-slate-500">Y (Höhe)</span>
+                      <input type="number" step="0.1" 
+                             value={(selectedObj.stats.boundingBox.size.y * selectedObj.transform.scale.y).toFixed(2)}
+                             onChange={(e) => {
+                                 const v = parseFloat(e.target.value);
+                                 if (!isNaN(v) && v > 0) {
+                                     onUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, y: v / (selectedObj.stats.boundingBox.size.y || 1) } } });
+                                 }
+                             }}
+                             className="bg-slate-800 text-[10px] text-slate-200 p-1 rounded border border-slate-700 w-full" />
+                  </label>
+                  <label className="flex flex-col">
+                      <span className="text-[8px] text-slate-500">Z (Tiefe/Dicke)</span>
+                      <input type="number" step="0.1" 
+                             value={(selectedObj.stats.boundingBox.size.z * selectedObj.transform.scale.z).toFixed(2)}
+                             onChange={(e) => {
+                                 const v = parseFloat(e.target.value);
+                                 if (!isNaN(v) && v > 0) {
+                                     onUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, z: v / (selectedObj.stats.boundingBox.size.z || 1) } } });
+                                 }
+                             }}
+                             className="bg-slate-800 text-[10px] text-slate-200 p-1 rounded border border-slate-700 w-full" />
+                  </label>
+              </div>
+           </div>
            <div className="grid grid-cols-2 gap-x-2">
               <Slider label="Pos X" value={selectedObj.transform.position.x} min={-200} max={200} 
                  onPointerDown={onSaveHistory} onChange={(v) => onUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, position: { ...selectedObj.transform.position, x: v } } })} />
@@ -199,11 +373,22 @@ const Controls: React.FC<ControlsProps> = (props) => {
               onPointerDown={onSaveHistory} onChange={(v) => onUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, z: v } } })} />
            
            <div className="mt-3">
-               <span className="text-[10px] text-slate-500 font-semibold mb-2 block uppercase tracking-wider">Spiegeln</span>
-               <div className="grid grid-cols-3 gap-2">
-                   <button onClick={() => props.onMirrorObject(selectedObj.id, 'x')} className="py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] text-slate-300 font-bold border border-slate-700 transition-colors">X-Achse</button>
-                   <button onClick={() => props.onMirrorObject(selectedObj.id, 'y')} className="py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] text-slate-300 font-bold border border-slate-700 transition-colors">Y-Achse</button>
-                   <button onClick={() => props.onMirrorObject(selectedObj.id, 'z')} className="py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] text-slate-300 font-bold border border-slate-700 transition-colors">Z-Achse</button>
+             <button 
+               onClick={props.onEraseWithObject}
+               className="w-full py-2 bg-rose-600/80 hover:bg-rose-500 rounded-lg text-[10px] font-bold text-white transition-all flex items-center justify-center gap-2 border border-rose-500/50"
+             >
+               <Scissors size={12} />
+               Als Radiergummi (aus allen anderen ausschneiden)
+             </button>
+           </div>
+
+           <div className="mt-3">
+               <span className="text-[10px] text-slate-500 font-semibold mb-2 block uppercase tracking-wider">Geometrie anpassen (Bake)</span>
+               <div className="grid grid-cols-4 gap-2">
+                   <button onClick={() => props.onMirrorObject(selectedObj.id, 'x')} className="py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] text-slate-300 font-bold border border-slate-700 transition-colors">Mirror X</button>
+                   <button onClick={() => props.onMirrorObject(selectedObj.id, 'y')} className="py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] text-slate-300 font-bold border border-slate-700 transition-colors">Mirror Y</button>
+                   <button onClick={() => props.onMirrorObject(selectedObj.id, 'z')} className="py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] text-slate-300 font-bold border border-slate-700 transition-colors">Mirror Z</button>
+                   <button onClick={() => props.onApplyScale(selectedObj.id)} disabled={selectedObj.transform.scale.x === 1 && selectedObj.transform.scale.y === 1 && selectedObj.transform.scale.z === 1} className="py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-[10px] text-white font-bold border border-blue-500 transition-colors" title="Skalierung in Geometrie einrechnen">Scale</button>
                </div>
            </div>
 
@@ -219,7 +404,7 @@ const Controls: React.FC<ControlsProps> = (props) => {
               <div className="bg-slate-900/40 p-2 rounded-lg border border-slate-800 col-span-2">
                  <span className="text-slate-500 block mb-0.5">Maße (X × Y × Z)</span>
                  <span className="font-mono text-slate-300 font-semibold text-[11px]">
-                    {(selectedObj.stats.boundingBox.size.x * selectedObj.transform.scale).toFixed(1)} × {(selectedObj.stats.boundingBox.size.y * selectedObj.transform.scale).toFixed(1)} × {(selectedObj.stats.boundingBox.size.z * selectedObj.transform.scale).toFixed(1)} mm
+                    {(selectedObj.stats.boundingBox.size.x * selectedObj.transform.scale.x).toFixed(1)} × {(selectedObj.stats.boundingBox.size.y * selectedObj.transform.scale.y).toFixed(1)} × {(selectedObj.stats.boundingBox.size.z * selectedObj.transform.scale.z).toFixed(1)} mm
                  </span>
               </div>
            </div>
@@ -269,14 +454,14 @@ const Controls: React.FC<ControlsProps> = (props) => {
           <div className="flex items-center justify-between mb-4">
               <span className="text-[11px] text-slate-300 font-medium">Slicing Vorschau</span>
               <button 
-                  onClick={() => onSliceChange({ ...state.slice, enabled: !state.slice.enabled })}
-                  className={`w-8 h-4 rounded-full transition-colors relative ${state.slice.enabled ? 'bg-blue-600' : 'bg-slate-700'}`}
+                  onClick={() => onSliceChange({ ...state.slice, enabled: !state.slice?.enabled })}
+                  className={`w-8 h-4 rounded-full transition-colors relative ${state.slice?.enabled ? 'bg-blue-600' : 'bg-slate-700'}`}
               >
-                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.slice.enabled ? 'left-4.5' : 'left-0.5'}`} />
+                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.slice?.enabled ? 'left-4.5' : 'left-0.5'}`} />
               </button>
           </div>
 
-          {state.slice.enabled && (
+          {state.slice?.enabled && (
              <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
                <div className="flex bg-slate-900/50 p-1 rounded-lg gap-1 border border-slate-700/30">
                   <button onClick={() => onSliceChange({...state.slice, mode: 'single'})} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.slice.mode==='single' ? 'bg-blue-600 text-white':'text-slate-500'}`}>EINZEL</button>
@@ -318,14 +503,14 @@ const Controls: React.FC<ControlsProps> = (props) => {
           <div className="flex items-center justify-between mb-4">
               <span className="text-[11px] text-slate-300 font-medium">Verlängerungs-Modus</span>
               <button 
-                  onClick={() => props.onExtendChange({ ...state.extend, enabled: !state.extend.enabled })}
-                  className={`w-8 h-4 rounded-full transition-colors relative ${state.extend.enabled ? 'bg-orange-600' : 'bg-slate-700'}`}
+                  onClick={() => props.onExtendChange({ ...state.extend, enabled: !state.extend?.enabled })}
+                  className={`w-8 h-4 rounded-full transition-colors relative ${state.extend?.enabled ? 'bg-orange-600' : 'bg-slate-700'}`}
               >
-                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.extend.enabled ? 'left-4.5' : 'left-0.5'}`} />
+                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.extend?.enabled ? 'left-4.5' : 'left-0.5'}`} />
               </button>
           </div>
 
-          {state.extend.enabled && (
+          {state.extend?.enabled && (
              <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
                <div className="p-3 bg-slate-900/30 rounded-lg border border-slate-700/30">
                   <Slider label="Verlängerung (mm)" value={state.extend.amount} min={1} max={200} onChange={v => props.onExtendChange({...state.extend, amount: v})} />
@@ -360,14 +545,14 @@ const Controls: React.FC<ControlsProps> = (props) => {
           <div className="flex items-center justify-between mb-4">
               <span className="text-[11px] text-slate-300 font-medium">Split-Modus</span>
               <button 
-                  onClick={() => onSplitChange({ ...state.split, enabled: !state.split.enabled })}
-                  className={`w-8 h-4 rounded-full transition-colors relative ${state.split.enabled ? 'bg-purple-600' : 'bg-slate-700'}`}
+                  onClick={() => onSplitChange({ ...state.split, enabled: !state.split?.enabled })}
+                  className={`w-8 h-4 rounded-full transition-colors relative ${state.split?.enabled ? 'bg-purple-600' : 'bg-slate-700'}`}
               >
-                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.split.enabled ? 'left-4.5' : 'left-0.5'}`} />
+                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.split?.enabled ? 'left-4.5' : 'left-0.5'}`} />
               </button>
           </div>
 
-          {state.split.enabled && (
+          {state.split?.enabled && (
             <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
                <div className="p-3 bg-slate-900/30 rounded-lg border border-slate-700/30">
                   <Slider label="Position X" value={state.split.position.x} min={-100} max={100} onChange={v => onSplitChange({...state.split, position: {...state.split.position, x: v}})} />
@@ -413,29 +598,70 @@ const Controls: React.FC<ControlsProps> = (props) => {
         <div className="flex items-center justify-between mb-4">
             <span className="text-[11px] text-slate-300 font-medium">Distanz messen</span>
             <button 
-                onClick={() => props.onMeasureChange({ ...state.measure, enabled: !state.measure.enabled, p1: null, p2: null })}
-                className={`w-8 h-4 rounded-full transition-colors relative ${state.measure.enabled ? 'bg-cyan-600' : 'bg-slate-700'}`}
+                onClick={() => props.onMeasureChange({ ...state.measure, enabled: !state.measure?.enabled, p1: null, p2: null })}
+                className={`w-8 h-4 rounded-full transition-colors relative ${state.measure?.enabled ? 'bg-cyan-600' : 'bg-slate-700'}`}
             >
-                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.measure.enabled ? 'left-4.5' : 'left-0.5'}`} />
+                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.measure?.enabled ? 'left-4.5' : 'left-0.5'}`} />
             </button>
         </div>
-        {state.measure.enabled && (
+        {state.measure?.enabled && (
            <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
              <div className="p-3 bg-slate-900/30 rounded-lg border border-slate-700/30">
                 <p className="text-[10px] text-slate-400 mb-2">
                   Klicken Sie auf zwei Punkte im 3D-Modell, um die Distanz zu messen.
                 </p>
-                {state.measure.p1 && state.measure.p2 && (
-                   <div className="mt-3 border-t border-slate-700/50 pt-3">
-                      <span className="text-slate-500 block mb-0.5 text-[10px]">Euklidische Distanz</span>
-                      <span className="font-mono text-cyan-400 font-semibold text-lg">
-                        {Math.sqrt(
-                           Math.pow(state.measure.p2.x - state.measure.p1.x, 2) +
-                           Math.pow(state.measure.p2.y - state.measure.p1.y, 2) +
-                           Math.pow(state.measure.p2.z - state.measure.p1.z, 2)
-                        ).toFixed(2)} mm
-                      </span>
-                   </div>
+                {state.measure?.p1 && state.measure?.p2 && (() => {
+                   const dist = Math.sqrt(
+                     Math.pow(state.measure.p2.x - state.measure.p1.x, 2) +
+                     Math.pow(state.measure.p2.y - state.measure.p1.y, 2) +
+                     Math.pow(state.measure.p2.z - state.measure.p1.z, 2)
+                   );
+                   const displayDist = state.measure.unit === 'in' ? (dist / 25.4) : dist;
+                   return (
+                    <div className="mt-3 border-t border-slate-700/50 pt-3">
+                       <div className="flex justify-between items-center mb-1">
+                         <span className="text-slate-500 block text-[10px]">Euklidische Distanz</span>
+                         <div className="flex bg-slate-800 rounded p-0.5">
+                           <button onClick={() => props.onMeasureChange({...state.measure, unit: 'mm'})} className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${state.measure.unit==='mm' ? 'bg-cyan-600 text-white':'text-slate-400 hover:text-slate-200'}`}>MM</button>
+                           <button onClick={() => props.onMeasureChange({...state.measure, unit: 'in'})} className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${state.measure.unit==='in' ? 'bg-cyan-600 text-white':'text-slate-400 hover:text-slate-200'}`}>IN</button>
+                         </div>
+                       </div>
+                       <span className="font-mono text-cyan-400 font-semibold text-lg">
+                         {displayDist.toFixed(2)} {state.measure.unit === 'in' ? 'in' : 'mm'}
+                       </span>
+                    </div>
+                   );
+                })()}
+             </div>
+           </div>
+        )}
+      </ControlGroup>
+
+      {/* ALIGN / SNAP */}
+      <ControlGroup title="Ausrichten" icon={<Move size={14} />}>
+        <div className="flex items-center justify-between mb-4">
+            <span className="text-[11px] text-slate-300 font-medium">Flächen verbinden</span>
+            <button 
+                onClick={() => props.onAlignChange({ enabled: !state.align?.enabled, step: 'select_source' })}
+                className={`w-8 h-4 rounded-full transition-colors relative ${state.align?.enabled ? 'bg-amber-600' : 'bg-slate-700'}`}
+            >
+                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.align?.enabled ? 'left-4.5' : 'left-0.5'}`} />
+            </button>
+        </div>
+        {state.align?.enabled && (
+           <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+             <div className="p-3 bg-slate-900/30 rounded-lg border border-amber-500/30">
+                <p className="text-[10px] text-slate-400 mb-2">
+                  {state.align.step === 'select_source' ? (
+                    <><strong className="text-amber-400">1. Start:</strong> Klicken Sie auf eine ebene Fläche eines Objekts.</>
+                  ) : (
+                    <><strong className="text-amber-400">2. Ziel:</strong> Klicken Sie auf eine ebene Fläche des Ziels.</>
+                  )}
+                </p>
+                {state.align.step === 'select_target' && (
+                  <button onClick={() => props.onAlignChange({ enabled: true, step: 'select_source' })} className="mt-2 text-[10px] text-amber-500 hover:text-amber-400">
+                    Zurücksetzen
+                  </button>
                 )}
              </div>
            </div>
@@ -454,17 +680,24 @@ const Controls: React.FC<ControlsProps> = (props) => {
       </ControlGroup>
 
       <div className="mt-auto pt-6 space-y-2">
+        <div className="flex gap-1 mb-2 bg-slate-800 p-1 rounded-lg">
+          {(['stl', 'obj', 'gltf'] as const).map(fmt => (
+            <button key={fmt} onClick={() => setExportFormat(fmt)} className={`flex-1 py-1 text-[9px] font-bold uppercase rounded ${exportFormat === fmt ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-700'}`}>
+              {fmt === 'gltf' ? 'GLB' : fmt}
+            </button>
+          ))}
+        </div>
         <button 
           disabled={state.objects.filter(o => o.visible).length === 0}
-          onClick={onExportCombined}
+          onClick={() => onExportCombined(exportFormat)}
           className="w-full py-2.5 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-[11px] shadow-xl shadow-blue-500/30 transition-all disabled:opacity-50"
         >
           <Download size={14} />
-          Sichtbare als 1 STL
+          Sichtbare als 1 {exportFormat.toUpperCase()}
         </button>
         <button 
           disabled={state.objects.filter(o => o.visible).length === 0}
-          onClick={onExportSeparate}
+          onClick={() => onExportSeparate(exportFormat)}
           className="w-full py-2.5 flex items-center justify-center gap-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-bold text-[11px] transition-all disabled:opacity-50"
         >
           <Download size={14} />

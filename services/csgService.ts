@@ -12,6 +12,14 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 const standardizeGeo = (geo: THREE.BufferGeometry) => {
     let clean = geo.clone();
+    const pos = clean.getAttribute("position");
+    if (pos) {
+        for (let i = 0; i < pos.count * pos.itemSize; i++) {
+            if (isNaN(pos.array[i]) || !isFinite(pos.array[i])) {
+                pos.array[i] = 0;
+            }
+        }
+    }
     
     // Always merge vertices for STL-like geometries if they don't have indexes
     if (!clean.index) {
@@ -37,7 +45,7 @@ const standardizeGeo = (geo: THREE.BufferGeometry) => {
         finalGeo.setIndex(new THREE.BufferAttribute(indices, 1));
     }
     
-    finalGeo.computeVertexNormals();
+    if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
     finalGeo.computeBoundsTree();
     console.log("standardizeGeo final attributes:", Object.keys(finalGeo.attributes));
     return finalGeo;
@@ -49,7 +57,7 @@ export const csgService = {
     sliceArgs: import('../types').SliceState
   ): THREE.BufferGeometry | null => {
     const size = 5000;
-    let planeGeo = new THREE.BoxGeometry(size, size, size);
+    let planeGeo: THREE.BufferGeometry = new THREE.BoxGeometry(size, size, size);
     if (sliceArgs.mode === 'single') {
         planeGeo.translate(0, 0, size/2);
     } else {
@@ -84,7 +92,7 @@ export const csgService = {
         THREE.MathUtils.degToRad(object.transform.rotation.y),
         THREE.MathUtils.degToRad(object.transform.rotation.z)
     );
-    targetMesh.scale.setScalar(object.transform.scale);
+    targetMesh.scale.set(object.transform.scale.x, object.transform.scale.y, object.transform.scale.z);
     targetMesh.updateMatrixWorld(true);
 
     const bTarget = new Brush(targetMesh.geometry, new THREE.MeshBasicMaterial());
@@ -106,7 +114,7 @@ export const csgService = {
     const res = evaluator.evaluate(bTarget, bCutter, sliceArgs.mode === 'single' ? SUBTRACTION : INTERSECTION);
     
     const geo = res.geometry.clone();
-    geo.computeVertexNormals();
+    if (geo.attributes.position && geo.attributes.position.count === 0) { geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); geo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { geo.computeVertexNormals(); }
     return geo;
   },
 
@@ -197,7 +205,7 @@ export const csgService = {
         THREE.MathUtils.degToRad(object.transform.rotation.y),
         THREE.MathUtils.degToRad(object.transform.rotation.z)
     );
-    targetMesh.scale.setScalar(object.transform.scale);
+    targetMesh.scale.set(object.transform.scale.x, object.transform.scale.y, object.transform.scale.z);
     targetMesh.updateMatrixWorld(true);
 
     const bTarget = new Brush(targetMesh.geometry, new THREE.MeshBasicMaterial());
@@ -231,10 +239,10 @@ export const csgService = {
     const partBBrush = evaluator.evaluate(bTarget, bCutter, INTERSECTION);
 
     const partAGeo = partABrush.geometry.clone();
-    partAGeo.computeVertexNormals();
+    if (partAGeo.attributes.position && partAGeo.attributes.position.count === 0) { partAGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); partAGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { partAGeo.computeVertexNormals(); }
 
     const partBGeo = partBBrush.geometry.clone();
-    partBGeo.computeVertexNormals();
+    if (partBGeo.attributes.position && partBGeo.attributes.position.count === 0) { partBGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); partBGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { partBGeo.computeVertexNormals(); }
 
     return { partA: partAGeo, partB: partBGeo };
   },
@@ -259,7 +267,7 @@ export const csgService = {
         THREE.MathUtils.degToRad(object.transform.rotation.y),
         THREE.MathUtils.degToRad(object.transform.rotation.z)
     );
-    targetMesh.scale.setScalar(object.transform.scale);
+    targetMesh.scale.set(object.transform.scale.x, object.transform.scale.y, object.transform.scale.z);
     targetMesh.updateMatrixWorld(true);
 
     const bTarget = new Brush(targetMesh.geometry, new THREE.MeshBasicMaterial());
@@ -331,7 +339,7 @@ export const csgService = {
     const invTargetMat = targetMesh.matrixWorld.clone().invert();
     finalGeo.applyMatrix4(invTargetMat);
 
-    finalGeo.computeVertexNormals();
+    if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
     return finalGeo;
   },
 
@@ -353,7 +361,7 @@ export const csgService = {
            THREE.MathUtils.degToRad(obj.transform.rotation.y),
            THREE.MathUtils.degToRad(obj.transform.rotation.z)
        );
-       mesh.scale.setScalar(obj.transform.scale);
+       mesh.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
        mesh.updateMatrixWorld(true);
 
        const brush = new Brush(mesh.geometry, new THREE.MeshBasicMaterial());
@@ -374,8 +382,125 @@ export const csgService = {
     const mergedGeo = currentBrush.geometry.clone();
     // Re-center geometry? We could, but then it moves everything. Better keep the absolute coordinate space!
     // But since it's an object with transform 0,0,0, its vertices are essentially in world space.
-    mergedGeo.computeVertexNormals();
+    if (mergedGeo.attributes.position && mergedGeo.attributes.position.count === 0) { mergedGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); mergedGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { mergedGeo.computeVertexNormals(); }
     return mergedGeo;
+  },
+
+  subtractObjects: (targetGeo: THREE.BufferGeometry, cutterGeo: THREE.BufferGeometry, targetTransform: any, cutterTransform: any): THREE.BufferGeometry | null => {
+     const gTarget = standardizeGeo(targetGeo);
+     const gCutter = standardizeGeo(cutterGeo);
+
+     const bTarget = new Brush(gTarget, new THREE.MeshBasicMaterial());
+     bTarget.position.set(targetTransform.position.x, targetTransform.position.y, targetTransform.position.z);
+     bTarget.rotation.set(
+         THREE.MathUtils.degToRad(targetTransform.rotation.x),
+         THREE.MathUtils.degToRad(targetTransform.rotation.y),
+         THREE.MathUtils.degToRad(targetTransform.rotation.z)
+     );
+     bTarget.scale.set(targetTransform.scale.x, targetTransform.scale.y, targetTransform.scale.z);
+     bTarget.updateMatrixWorld(true);
+
+     const bCutter = new Brush(gCutter, new THREE.MeshBasicMaterial());
+     bCutter.position.set(cutterTransform.position.x, cutterTransform.position.y, cutterTransform.position.z);
+     bCutter.rotation.set(
+         THREE.MathUtils.degToRad(cutterTransform.rotation.x),
+         THREE.MathUtils.degToRad(cutterTransform.rotation.y),
+         THREE.MathUtils.degToRad(cutterTransform.rotation.z)
+     );
+     bCutter.scale.set(cutterTransform.scale.x, cutterTransform.scale.y, cutterTransform.scale.z);
+     bCutter.updateMatrixWorld(true);
+
+     const evalCSG = new Evaluator();
+     evalCSG.useGroups = false;
+     evalCSG.attributes = ['position', 'normal'];
+     const res = evalCSG.evaluate(bTarget, bCutter, SUBTRACTION);
+     
+     if (!res) return null;
+     
+     const finalGeo = res.geometry.clone();
+     const invTargetMat = bTarget.matrixWorld.clone().invert();
+     finalGeo.applyMatrix4(invTargetMat);
+     if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
+
+     return finalGeo;
+  },
+
+  intersectObjects: (targetGeo: THREE.BufferGeometry, cutterGeo: THREE.BufferGeometry, targetTransform: any, cutterTransform: any): THREE.BufferGeometry | null => {
+     const gTarget = standardizeGeo(targetGeo);
+     const gCutter = standardizeGeo(cutterGeo);
+
+     const bTarget = new Brush(gTarget, new THREE.MeshBasicMaterial());
+     bTarget.position.set(targetTransform.position.x, targetTransform.position.y, targetTransform.position.z);
+     bTarget.rotation.set(
+         THREE.MathUtils.degToRad(targetTransform.rotation.x),
+         THREE.MathUtils.degToRad(targetTransform.rotation.y),
+         THREE.MathUtils.degToRad(targetTransform.rotation.z)
+     );
+     bTarget.scale.set(targetTransform.scale.x, targetTransform.scale.y, targetTransform.scale.z);
+     bTarget.updateMatrixWorld(true);
+
+     const bCutter = new Brush(gCutter, new THREE.MeshBasicMaterial());
+     bCutter.position.set(cutterTransform.position.x, cutterTransform.position.y, cutterTransform.position.z);
+     bCutter.rotation.set(
+         THREE.MathUtils.degToRad(cutterTransform.rotation.x),
+         THREE.MathUtils.degToRad(cutterTransform.rotation.y),
+         THREE.MathUtils.degToRad(cutterTransform.rotation.z)
+     );
+     bCutter.scale.set(cutterTransform.scale.x, cutterTransform.scale.y, cutterTransform.scale.z);
+     bCutter.updateMatrixWorld(true);
+
+     const evalCSG = new Evaluator();
+     evalCSG.useGroups = false;
+     evalCSG.attributes = ['position', 'normal'];
+     const res = evalCSG.evaluate(bTarget, bCutter, INTERSECTION);
+     
+     if (!res) return null;
+     
+     const finalGeo = res.geometry.clone();
+     const invTargetMat = bTarget.matrixWorld.clone().invert();
+     finalGeo.applyMatrix4(invTargetMat);
+     if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
+
+     return finalGeo;
+  },
+
+  unionObjects: (targetGeo: THREE.BufferGeometry, cutterGeo: THREE.BufferGeometry, targetTransform: any, cutterTransform: any): THREE.BufferGeometry | null => {
+     const gTarget = standardizeGeo(targetGeo);
+     const gCutter = standardizeGeo(cutterGeo);
+
+     const bTarget = new Brush(gTarget, new THREE.MeshBasicMaterial());
+     bTarget.position.set(targetTransform.position.x, targetTransform.position.y, targetTransform.position.z);
+     bTarget.rotation.set(
+         THREE.MathUtils.degToRad(targetTransform.rotation.x),
+         THREE.MathUtils.degToRad(targetTransform.rotation.y),
+         THREE.MathUtils.degToRad(targetTransform.rotation.z)
+     );
+     bTarget.scale.set(targetTransform.scale.x, targetTransform.scale.y, targetTransform.scale.z);
+     bTarget.updateMatrixWorld(true);
+
+     const bCutter = new Brush(gCutter, new THREE.MeshBasicMaterial());
+     bCutter.position.set(cutterTransform.position.x, cutterTransform.position.y, cutterTransform.position.z);
+     bCutter.rotation.set(
+         THREE.MathUtils.degToRad(cutterTransform.rotation.x),
+         THREE.MathUtils.degToRad(cutterTransform.rotation.y),
+         THREE.MathUtils.degToRad(cutterTransform.rotation.z)
+     );
+     bCutter.scale.set(cutterTransform.scale.x, cutterTransform.scale.y, cutterTransform.scale.z);
+     bCutter.updateMatrixWorld(true);
+
+     const evalCSG = new Evaluator();
+     evalCSG.useGroups = false;
+     evalCSG.attributes = ['position', 'normal'];
+     const res = evalCSG.evaluate(bTarget, bCutter, ADDITION);
+     
+     if (!res) return null;
+     
+     const finalGeo = res.geometry.clone();
+     const invTargetMat = bTarget.matrixWorld.clone().invert();
+     finalGeo.applyMatrix4(invTargetMat);
+     if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
+
+     return finalGeo;
   },
 
   unionGeometries: (geo1: THREE.BufferGeometry, geo2: THREE.BufferGeometry): THREE.BufferGeometry => {

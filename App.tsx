@@ -33,21 +33,96 @@ const INITIAL_EXTEND: ExtendState = {
   amount: 20
 };
 
+const validateAndRepairGeometry = (geo: THREE.BufferGeometry): THREE.BufferGeometry => {
+  if (!geo || !geo.attributes.position) return geo;
+  
+  let nonIndexedGeo = geo.index ? geo.toNonIndexed() : geo;
+  const posAttr = nonIndexedGeo.attributes.position;
+  
+  const validPositions: number[] = [];
+  let hasNaN = false;
+  let degenerateCount = 0;
+  
+  const v1 = new THREE.Vector3();
+  const v2 = new THREE.Vector3();
+  const v3 = new THREE.Vector3();
+  
+  for (let i = 0; i < posAttr.count; i += 3) {
+    if (i + 2 >= posAttr.count) break;
+    
+    v1.fromBufferAttribute(posAttr, i);
+    v2.fromBufferAttribute(posAttr, i + 1);
+    v3.fromBufferAttribute(posAttr, i + 2);
+    
+    if (
+      isNaN(v1.x) || isNaN(v1.y) || isNaN(v1.z) || !isFinite(v1.x) || !isFinite(v1.y) || !isFinite(v1.z) ||
+      isNaN(v2.x) || isNaN(v2.y) || isNaN(v2.z) || !isFinite(v2.x) || !isFinite(v2.y) || !isFinite(v2.z) ||
+      isNaN(v3.x) || isNaN(v3.y) || isNaN(v3.z) || !isFinite(v3.x) || !isFinite(v3.y) || !isFinite(v3.z)
+    ) {
+      hasNaN = true;
+      continue;
+    }
+    
+    const edge1 = new THREE.Vector3().subVectors(v2, v1);
+    const edge2 = new THREE.Vector3().subVectors(v3, v1);
+    const cross = new THREE.Vector3().crossVectors(edge1, edge2);
+    
+    if (cross.lengthSq() < 1e-10) {
+       degenerateCount++;
+       continue;
+    }
+    
+    validPositions.push(v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z);
+  }
+  
+  if (hasNaN || degenerateCount > 0) {
+    console.warn(`Filtered ${degenerateCount} degenerate triangles and NaN vertices.`);
+  }
+  
+  const newGeo = new THREE.BufferGeometry();
+  if (validPositions.length > 0) {
+    newGeo.setAttribute('position', new THREE.Float32BufferAttribute(validPositions, 3));
+    newGeo.computeVertexNormals();
+    newGeo.computeBoundingBox();
+    newGeo.computeBoundingSphere();
+  } else {
+    // Provide a safe empty geometry
+    newGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+    newGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0);
+    newGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0));
+  }
+  return newGeo;
+};
+
 const INITIAL_MEASURE = {
   enabled: false,
   p1: null,
   p2: null,
+  unit: 'mm' as const,
+};
+
+const INITIAL_BOOLEAN = {
+  enabled: false,
+  operation: 'subtract' as const,
+  targetId: null,
+  cutterId: null,
+  preview: true
 };
 
 const INITIAL_STATE: AppState = {
   objects: [],
+  selectedIds: [],
   selectedId: null,
   slice: INITIAL_SLICE,
   split: INITIAL_SPLIT,
   extend: INITIAL_EXTEND,
   measure: INITIAL_MEASURE,
+  align: { enabled: false, step: 'select_source' },
+  boolean: INITIAL_BOOLEAN,
   viewMode: 'solid',
   globalColor: '#3b82f6',
+  transformMode: 'translate',
+  snapToEdge: false,
 };
 
 const App: React.FC = () => {
@@ -58,8 +133,17 @@ const App: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPartsMenuOpen, setIsPartsMenuOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; objectId: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
+
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setContextMenu(null);
+    };
+    window.addEventListener('click', handleGlobalClick);
+    return () => window.removeEventListener('click', handleGlobalClick);
+  }, []);
 
   const pushHistory = () => {
     setPastObjects(p => {
@@ -122,6 +206,14 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [pastObjects, futureObjects, state.selectedId, state.objects]);
 
+const getHighContrastColor = (): string => {
+  const isDark = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const darkColors = ['#38bdf8', '#f87171', '#34d399', '#fbbf24', '#a78bfa', '#f472b6', '#e2e8f0'];
+  const lightColors = ['#0284c7', '#dc2626', '#059669', '#d97706', '#7c3aed', '#db2777', '#475569'];
+  const palette = isDark ? darkColors : lightColors;
+  return palette[Math.floor(Math.random() * palette.length)];
+};
+
   const processFile = async (file: File) => {
     if (file.name.toLowerCase().endsWith('.stlc')) {
       await loadProject(file);
@@ -131,7 +223,9 @@ const App: React.FC = () => {
     
     try {
       const buffer = await file.arrayBuffer();
-      const geo = await stlService.loadFromBuffer(buffer);
+      let geo = await stlService.loadFromBuffer(buffer);
+      
+      geo = validateAndRepairGeometry(geo);
       
       if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) {
         throw new Error("Ungültige oder unvollständige STL-Geometrie.");
@@ -144,9 +238,9 @@ const App: React.FC = () => {
         id: Math.random().toString(36).substr(2, 9),
         name: file.name.replace('.stl', ''),
         geometry: geo,
-        transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 },
+        transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
         visible: true,
-        color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0'),
+        color: getHighContrastColor(),
         stats
       };
 
@@ -212,7 +306,7 @@ const App: React.FC = () => {
 
   const handleBakeSlice = async () => {
     const selected = state.objects.find(o => o.id === state.selectedId);
-    if (!selected || !state.slice.enabled) return;
+    if (!selected || !state.slice?.enabled) return;
 
     try {
         const { csgService } = await import('./services/csgService');
@@ -223,7 +317,7 @@ const App: React.FC = () => {
             id: Math.random().toString(36).substr(2, 9),
             name: `${selected.name}_Slice`,
             geometry: newGeo,
-            transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 }, // Transform is baked in
+            transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, // Transform is baked in
             visible: true,
             color: selected.color,
             stats: stlService.calculateStats(newGeo)
@@ -244,7 +338,7 @@ const App: React.FC = () => {
 
   const handlePerformSplit = async () => {
       const selected = state.objects.find(o => o.id === state.selectedId);
-      if (!selected || !state.split.enabled) return;
+      if (!selected || !state.split?.enabled) return;
       
       try {
           const { csgService } = await import('./services/csgService');
@@ -255,7 +349,7 @@ const App: React.FC = () => {
               id: Math.random().toString(36).substr(2, 9),
               name: `${selected.name}_A`,
               geometry: result.partA,
-              transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 }, // baked transform
+              transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, // baked transform
               visible: true,
               color: selected.color,
               stats: stlService.calculateStats(result.partA)
@@ -265,7 +359,7 @@ const App: React.FC = () => {
             id: Math.random().toString(36).substr(2, 9),
             name: `${selected.name}_B`,
             geometry: result.partB,
-            transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 }, // baked transform
+            transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, // baked transform
             visible: true,
             color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0'), // slightly different color
             stats: stlService.calculateStats(result.partB)
@@ -338,6 +432,167 @@ const App: React.FC = () => {
       }));
   };
 
+  const handleApplyScale = (id: string) => {
+      const obj = state.objects.find(o => o.id === id);
+      if (!obj || obj.transform.scale.x === 1 && obj.transform.scale.y === 1 && obj.transform.scale.z === 1) return;
+      
+      const newGeo = obj.geometry.clone();
+      newGeo.scale(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
+      
+      pushHistory();
+      setState(prev => ({
+          ...prev,
+          objects: prev.objects.map(o => o.id === id ? {
+              ...o,
+              geometry: newGeo,
+              transform: { ...o.transform, scale: { x: 1, y: 1, z: 1 } },
+              stats: stlService.calculateStats(newGeo)
+          } : o)
+      }));
+  };
+
+  const handlePerformBoolean = async () => {
+      const boolState = state.boolean;
+      if (!boolState || !boolState.enabled || !boolState.targetId || !boolState.cutterId) {
+          setErrorMsg("Bitte wählen Sie Ziel- und Werkzeug-Objekte aus.");
+          return;
+      }
+
+      const targetObj = state.objects.find(o => o.id === boolState.targetId);
+      const cutterObj = state.objects.find(o => o.id === boolState.cutterId);
+
+      if (!targetObj || !cutterObj) return;
+
+      setIsProcessing(true);
+
+      try {
+          // Add small delay for UI to update
+          await new Promise(resolve => setTimeout(resolve, 50));
+          const { csgService } = await import('./services/csgService');
+          
+          let resultGeo: THREE.BufferGeometry | null = null;
+          
+          if (boolState.operation === 'subtract') {
+              resultGeo = csgService.subtractObjects(
+                  targetObj.geometry, 
+                  cutterObj.geometry,
+                  targetObj.transform,
+                  cutterObj.transform
+              );
+          } else if (boolState.operation === 'intersect') {
+              resultGeo = csgService.intersectObjects(
+                  targetObj.geometry, 
+                  cutterObj.geometry,
+                  targetObj.transform,
+                  cutterObj.transform
+              );
+          } else if (boolState.operation === 'union') {
+              resultGeo = csgService.unionObjects(
+                  targetObj.geometry, 
+                  cutterObj.geometry,
+                  targetObj.transform,
+                  cutterObj.transform
+              );
+          }
+
+          if (!resultGeo) throw new Error("Boolean-Operation fehlgeschlagen.");
+
+          pushHistory();
+
+          let opName = 'Ausgeschnitten';
+          if (boolState.operation === 'intersect') opName = 'Schnittmenge';
+          if (boolState.operation === 'union') opName = 'Vereinigt';
+
+          const newObj: SceneObject = {
+              ...targetObj,
+              id: Math.random().toString(36).substr(2, 9),
+              name: `${targetObj.name} (${opName})`,
+              geometry: resultGeo,
+              stats: (await import('./services/stlService')).stlService.calculateStats(resultGeo)
+          };
+
+          setState(prev => {
+              const others = prev.objects.filter(o => o.id !== targetObj.id && o.id !== cutterObj.id);
+              // Hide the cutter, remove the original target
+              const newCutterObj = { ...cutterObj, visible: false };
+              return {
+                  ...prev,
+                  objects: [...others, newCutterObj, newObj],
+                  selectedId: newObj.id,
+                  selectedIds: [newObj.id],
+                  boolean: { ...prev.boolean, enabled: false }
+              };
+          });
+      } catch (err: any) {
+          setErrorMsg(`Fehler bei Boolean-Operation: ${err.message}`);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+  const handleEraseWithObject = async () => {
+      const cutterId = state.selectedId;
+      if (!cutterId) return;
+
+      const cutterObj = state.objects.find(o => o.id === cutterId);
+      if (!cutterObj) return;
+
+      setIsProcessing(true);
+
+      try {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          const { csgService } = await import('./services/csgService');
+          const { stlService } = await import('./services/stlService');
+
+          let newObjects: SceneObject[] = [];
+          
+          for (const targetObj of state.objects) {
+              if (targetObj.id === cutterId || !targetObj.visible) {
+                  continue; // Skip the cutter and hidden objects
+              }
+
+              const resultGeo = csgService.subtractObjects(
+                  targetObj.geometry, 
+                  cutterObj.geometry,
+                  targetObj.transform,
+                  cutterObj.transform
+              );
+
+              if (resultGeo) {
+                  if (resultGeo.attributes.position && resultGeo.attributes.position.count > 0) {
+                      newObjects.push({
+                          ...targetObj,
+                          id: Math.random().toString(36).substr(2, 9),
+                          geometry: resultGeo,
+                          stats: stlService.calculateStats(resultGeo)
+                      });
+                  }
+                  // if 0 vertices, the object is completely erased, so don't push anything
+              } else {
+                  // If it fails, just keep original
+                  newObjects.push(targetObj);
+              }
+          }
+
+          pushHistory();
+
+          setState(prev => {
+              // Get hidden objects
+              const hiddenObjects = prev.objects.filter(o => !o.visible && o.id !== cutterId);
+              return {
+                  ...prev,
+                  objects: [...hiddenObjects, ...newObjects],
+                  selectedId: null,
+                  selectedIds: []
+              };
+          });
+      } catch (err: any) {
+          setErrorMsg(`Fehler beim Radieren: ${err.message}`);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
   const handleMergeObjects = async () => {
       const visibleObjects = state.objects.filter(o => o.visible);
       if (visibleObjects.length < 2) {
@@ -358,7 +613,7 @@ const App: React.FC = () => {
               id: Math.random().toString(36).substr(2, 9),
               name: `Fusion (${visibleObjects.length} Teile)`,
               geometry: mergedGeo,
-              transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: 1 },
+              transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
               visible: true,
               color: state.globalColor,
               stats: stlService.calculateStats(mergedGeo)
@@ -380,7 +635,7 @@ const App: React.FC = () => {
 
   const handlePerformExtend = async () => {
       const selected = state.objects.find(o => o.id === state.selectedId);
-      if (!selected || !state.extend.enabled) return;
+      if (!selected || !state.extend?.enabled) return;
       
       try {
           const { csgService } = await import('./services/csgService');
@@ -441,17 +696,32 @@ const App: React.FC = () => {
       const reconstructedObjects = await Promise.all(parsed.objects.map(async (obj: any) => {
         if (!obj.stlBase64) throw new Error("Fehlende 3D-Daten im Projekt");
         const buffer = stlService.base64ToBuffer(obj.stlBase64);
-        const geo = await stlService.loadFromBuffer(buffer);
+        let geo = await stlService.loadFromBuffer(buffer);
+        geo = validateAndRepairGeometry(geo);
         // Important: delete the base64 string to avoid storing huge strings in state!
         delete obj.stlBase64; 
+        
+        // Ensure valid transform
+        const transform = obj.transform || {};
+        const position = transform.position || {};
+        const rotation = transform.rotation || {};
+        const scale = transform.scale || {};
+        
         return {
           ...obj,
+          transform: {
+            position: { x: position.x ?? 0, y: position.y ?? 0, z: position.z ?? 0 },
+            rotation: { x: rotation.x ?? 0, y: rotation.y ?? 0, z: rotation.z ?? 0 },
+            scale: { x: scale.x ?? 1, y: scale.y ?? 1, z: scale.z ?? 1 },
+          },
+          visible: obj.visible !== false,
           geometry: geo
         } as SceneObject;
       }));
 
       pushHistory();
       setState({
+        ...INITIAL_STATE,
         ...parsed,
         objects: reconstructedObjects
       });
@@ -484,25 +754,48 @@ const App: React.FC = () => {
       }));
   };
 
-  const handleExport = () => {
-      const blob = stlService.exportCombined(state.objects);
+  const handleAddPrimitive = async (type: import('./services/primitiveService').PrimitiveType) => {
+      const { primitiveService, primitiveNames } = await import('./services/primitiveService');
+      const geometry = primitiveService.createPrimitive(type, 20); // Base size 20mm
+      const newObj: SceneObject = {
+          id: Math.random().toString(36).substr(2, 9),
+          name: primitiveNames[type],
+          geometry,
+          transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+          visible: true,
+          color: '#ef4444', // Default to a reddish color to indicate cutter/eraser
+          stats: await stlService.calculateStats(geometry)
+      };
+      pushHistory();
+      setState(prev => ({
+          ...prev,
+          objects: [...prev.objects, newObj],
+          selectedId: newObj.id,
+          selectedIds: [newObj.id]
+      }));
+  };
+
+  const handleExport = async (format: 'stl' | 'obj' | 'gltf') => {
+      const blob = await stlService.exportCombined(state.objects, format);
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = `assembly_${new Date().getTime()}.stl`;
+      const extension = format === 'gltf' ? 'glb' : format;
+      link.download = `assembly_${new Date().getTime()}.${extension}`;
       link.click();
   };
 
-  const handleExportSeparate = async () => {
+  const handleExportSeparate = async (format: 'stl' | 'obj' | 'gltf') => {
       const visibleObjects = state.objects.filter(o => o.visible);
       if (visibleObjects.length === 0) return;
       
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
       
-      visibleObjects.forEach(obj => {
-          const blob = stlService.exportCombined([obj]);
-          zip.file(`${obj.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.stl`, blob);
-      });
+      for (const obj of visibleObjects) {
+          const blob = await stlService.exportCombined([obj], format);
+          const extension = format === 'gltf' ? 'glb' : format;
+          zip.file(`${obj.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.${extension}`, blob);
+      }
       
       const content = await zip.generateAsync({ type: 'blob' });
       const link = document.createElement('a');
@@ -525,6 +818,201 @@ const App: React.FC = () => {
         
         return { ...prev, measure: newMeasure };
     });
+  };
+
+  const handleAlignClick = (objectId: string, point: THREE.Vector3, normal: THREE.Vector3) => {
+    if (!state.align?.enabled) return;
+    
+    if (state.align.step === 'select_source') {
+      setState(prev => ({
+        ...prev,
+        align: {
+          ...prev.align,
+          step: 'select_target',
+          source: { objectId, point: { x: point.x, y: point.y, z: point.z }, normal: { x: normal.x, y: normal.y, z: normal.z } }
+        }
+      }));
+    } else if (state.align.step === 'select_target') {
+      const source = state.align.source!;
+      if (!source) return;
+
+      pushHistory();
+
+      // target info
+      const targetPoint = point;
+      const targetNormal = normal;
+
+      setState(prev => {
+        const sourceObj = prev.objects.find(o => o.id === source.objectId);
+        if (!sourceObj) return prev;
+
+        const sourceGroup = new THREE.Group();
+        sourceGroup.position.set(sourceObj.transform.position.x, sourceObj.transform.position.y, sourceObj.transform.position.z);
+        sourceGroup.rotation.set(
+            THREE.MathUtils.degToRad(sourceObj.transform.rotation.x),
+            THREE.MathUtils.degToRad(sourceObj.transform.rotation.y),
+            THREE.MathUtils.degToRad(sourceObj.transform.rotation.z)
+        );
+
+        const sNormal = new THREE.Vector3(source.normal.x, source.normal.y, source.normal.z).normalize();
+        const tNormal = new THREE.Vector3(targetNormal.x, targetNormal.y, targetNormal.z).normalize();
+        
+        const targetSNormal = tNormal.clone().negate();
+        const quaternion = new THREE.Quaternion().setFromUnitVectors(sNormal, targetSNormal);
+        
+        const currentQuat = sourceGroup.quaternion.clone();
+        const newQuat = quaternion.clone().multiply(currentQuat);
+        sourceGroup.quaternion.copy(newQuat);
+        
+        const sourceOrigin = sourceGroup.position.clone();
+        const sPoint = new THREE.Vector3(source.point.x, source.point.y, source.point.z);
+        const offset = sPoint.clone().sub(sourceOrigin);
+        offset.applyQuaternion(quaternion);
+        const newSourcePoint = sourceOrigin.clone().add(offset);
+        
+        const tPoint = new THREE.Vector3(targetPoint.x, targetPoint.y, targetPoint.z);
+        const translation = tPoint.clone().sub(newSourcePoint);
+        
+        sourceGroup.position.add(translation);
+        
+        const euler = new THREE.Euler().setFromQuaternion(sourceGroup.quaternion);
+        
+        const newObjects = prev.objects.map(o => {
+            if (o.id === source.objectId) {
+                return {
+                    ...o,
+                    transform: {
+                        ...o.transform,
+                        position: { x: sourceGroup.position.x, y: sourceGroup.position.y, z: sourceGroup.position.z },
+                        rotation: { 
+                            x: THREE.MathUtils.radToDeg(euler.x), 
+                            y: THREE.MathUtils.radToDeg(euler.y), 
+                            z: THREE.MathUtils.radToDeg(euler.z) 
+                        }
+                    }
+                };
+            }
+            return o;
+        });
+
+        return {
+          ...prev,
+          objects: newObjects,
+          align: {
+            enabled: false,
+            step: 'select_source',
+            source: undefined
+          }
+        };
+      });
+    }
+  };
+
+  const handleSnapCentroids = () => {
+      if (state.selectedIds.length !== 2) return;
+      const [id1, id2] = state.selectedIds;
+      
+      const obj1 = state.objects.find(o => o.id === id1);
+      const obj2 = state.objects.find(o => o.id === id2);
+      if (!obj1 || !obj2) return;
+
+      pushHistory();
+
+      const computeWorldBounds = (obj: SceneObject) => {
+          const group = new THREE.Group();
+          group.position.set(obj.transform.position.x, obj.transform.position.y, obj.transform.position.z);
+          group.rotation.set(
+              THREE.MathUtils.degToRad(obj.transform.rotation.x),
+              THREE.MathUtils.degToRad(obj.transform.rotation.y),
+              THREE.MathUtils.degToRad(obj.transform.rotation.z)
+          );
+          group.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
+          
+          const mesh = new THREE.Mesh(obj.geometry);
+          group.add(mesh);
+          group.updateMatrixWorld(true);
+          
+          const box = new THREE.Box3().setFromObject(group);
+          const center = new THREE.Vector3();
+          box.getCenter(center);
+          return { box, center, group };
+      };
+
+      const b1 = computeWorldBounds(obj1);
+      const b2 = computeWorldBounds(obj2);
+
+      const diff = b2.center.clone().sub(b1.center);
+      const absDiff = [Math.abs(diff.x), Math.abs(diff.y), Math.abs(diff.z)];
+      let dominantAxis = 0;
+      if (absDiff[1] > absDiff[0] && absDiff[1] > absDiff[2]) dominantAxis = 1;
+      if (absDiff[2] > absDiff[0] && absDiff[2] > absDiff[1]) dominantAxis = 2;
+
+      const translation = new THREE.Vector3();
+      const axes = ['x', 'y', 'z'] as const;
+
+      for (let i = 0; i < 3; i++) {
+          const axis = axes[i];
+          if (i !== dominantAxis) {
+              translation[axis] = b1.center[axis] - b2.center[axis];
+          }
+      }
+
+      const domAxis = axes[dominantAxis];
+      if (diff[domAxis] > 0) {
+          translation[domAxis] = b1.box.max[domAxis] - b2.box.min[domAxis];
+      } else {
+          translation[domAxis] = b1.box.min[domAxis] - b2.box.max[domAxis];
+      }
+
+      setState(prev => {
+          return {
+              ...prev,
+              objects: prev.objects.map(o => {
+                  if (o.id === id2) {
+                      return {
+                          ...o,
+                          transform: {
+                              ...o.transform,
+                              position: {
+                                  x: o.transform.position.x + translation.x,
+                                  y: o.transform.position.y + translation.y,
+                                  z: o.transform.position.z + translation.z,
+                              }
+                          }
+                      };
+                  }
+                  return o;
+              })
+          };
+      });
+  };
+
+  const handleSelectObject = (id: string | null | 'all', multiSelect: boolean = false) => {
+      setState(prev => {
+          let newSelectedIds = [...(prev.selectedIds || [])];
+          if (id === 'all') {
+              newSelectedIds = prev.objects.map(o => o.id);
+              return { ...prev, selectedId: 'all', selectedIds: newSelectedIds };
+          }
+          if (id === null) {
+              return { ...prev, selectedId: null, selectedIds: [] };
+          }
+          if (multiSelect) {
+              if (newSelectedIds.includes(id)) {
+                  newSelectedIds = newSelectedIds.filter(i => i !== id);
+              } else {
+                  newSelectedIds.push(id);
+              }
+          } else {
+              newSelectedIds = [id];
+          }
+          return { 
+              ...prev, 
+              selectedId: newSelectedIds.length > 0 ? newSelectedIds[newSelectedIds.length - 1] : null, 
+              selectedIds: newSelectedIds,
+              boolean: newSelectedIds.length === 2 ? prev.boolean : { ...prev.boolean, enabled: false }
+          };
+      });
   };
 
   return (
@@ -570,11 +1058,14 @@ const App: React.FC = () => {
         <div className="flex-1 overflow-hidden">
           <Controls 
             state={state}
-            onSelect={(id) => setState(prev => ({ ...prev, selectedId: id }))}
+            onSelect={handleSelectObject}
             onUpdateObject={handleUpdateObject}
             onDeleteObject={handleDelete}
             onDuplicateObject={handleDuplicate}
             onMirrorObject={handleMirrorObject}
+            onApplyScale={handleApplyScale}
+            onAddPrimitive={handleAddPrimitive}
+            onEraseWithObject={handleEraseWithObject}
             onSliceChange={(slice) => setState(prev => ({ ...prev, slice }))}
             onBakeSlice={handleBakeSlice}
             onSplitChange={(split) => setState(prev => ({ ...prev, split }))}
@@ -582,8 +1073,14 @@ const App: React.FC = () => {
             onExtendChange={(extend) => setState(prev => ({ ...prev, extend }))}
             onPerformExtend={handlePerformExtend}
             onMergeObjects={handleMergeObjects}
+            onBooleanChange={(booleanState) => setState(prev => ({ ...prev, boolean: booleanState }))}
+            onPerformBoolean={handlePerformBoolean}
             onViewModeChange={(mode) => setState(prev => ({ ...prev, viewMode: mode }))}
             onMeasureChange={(measure) => setState(prev => ({ ...prev, measure }))}
+            onAlignChange={(align) => setState(prev => ({ ...prev, align }))}
+            onTransformModeChange={(mode) => setState(prev => ({ ...prev, transformMode: mode }))}
+            onSnapToEdgeChange={(snap) => setState(prev => ({ ...prev, snapToEdge: snap }))}
+            onSnapCentroids={handleSnapCentroids}
             onExportCombined={handleExport}
             onExportSeparate={handleExportSeparate}
             onSaveHistory={pushHistory}
@@ -638,20 +1135,301 @@ const App: React.FC = () => {
         </div>
 
         <div className="w-full h-full relative">
-           <Viewer state={state} onMeasureClick={handleMeasureClick} />
+           <Viewer 
+               state={state} 
+               onMeasureClick={handleMeasureClick} 
+               onAlignClick={handleAlignClick} 
+               onUpdateObject={handleUpdateObject} 
+               onSaveHistory={pushHistory} 
+               onClickObject={handleSelectObject} 
+               onContextMenu={(id, x, y) => setContextMenu({ x, y, objectId: id })}
+           />
            
-           {state.measure.enabled && state.measure.p1 && state.measure.p2 && (
-             <div className="absolute top-10 left-1/2 -translate-x-1/2 z-30 bg-slate-900/90 backdrop-blur border border-cyan-500/50 px-6 py-3 rounded-2xl shadow-2xl flex flex-col items-center animate-in fade-in slide-in-from-top-4">
-                <span className="text-slate-400 text-[10px] uppercase font-bold tracking-widest mb-1">Distanz</span>
-                <span className="font-mono text-cyan-400 text-2xl font-bold">
-                    {Math.sqrt(
-                       Math.pow(state.measure.p2.x - state.measure.p1.x, 2) +
-                       Math.pow(state.measure.p2.y - state.measure.p1.y, 2) +
-                       Math.pow(state.measure.p2.z - state.measure.p1.z, 2)
-                    ).toFixed(2)} mm
-                </span>
-             </div>
-           )}
+           {contextMenu && (() => {
+               const selectedObj = state.objects.find(o => o.id === contextMenu.objectId);
+               if (!selectedObj) return null;
+               const left = Math.min(contextMenu.x, window.innerWidth - 270);
+               const top = Math.min(contextMenu.y, window.innerHeight - 360);
+               return (
+                 <div 
+                   style={{ left, top }}
+                   className="fixed z-50 bg-slate-900/95 backdrop-blur border border-slate-700/80 p-3 rounded-xl shadow-2xl w-64 text-slate-200 text-xs animate-in fade-in zoom-in-95 duration-100"
+                   onClick={(e) => e.stopPropagation()}
+                   onContextMenu={(e) => e.preventDefault()}
+                 >
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-2">
+                       <span className="font-bold text-slate-300">Objekt-Eigenschaften</span>
+                       <button onClick={() => setContextMenu(null)} className="text-slate-500 hover:text-slate-300">✕</button>
+                    </div>
+                    <div className="space-y-2">
+                       <div>
+                          <label className="block text-[10px] text-slate-400 font-semibold mb-0.5">Name</label>
+                          <input 
+                            type="text" 
+                            value={selectedObj.name} 
+                            onChange={(e) => handleUpdateObject(selectedObj.id, { name: e.target.value })}
+                            className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-slate-100 focus:outline-none focus:border-blue-500"
+                          />
+                       </div>
+                       
+                       <div>
+                          <span className="block text-[10px] text-slate-400 font-semibold mb-1">Abmessungen (mm)</span>
+                          <div className="grid grid-cols-3 gap-1">
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Breite (X)</span>
+                                <input 
+                                  type="number" 
+                                  step="0.1" 
+                                  value={parseFloat(((selectedObj.stats.boundingBox?.size?.x || 1) * Math.abs(selectedObj.transform.scale.x)).toFixed(2))}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v) && v > 0) {
+                                        const sign = selectedObj.transform.scale.x < 0 ? -1 : 1;
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { 
+                                              ...selectedObj.transform, 
+                                              scale: { ...selectedObj.transform.scale, x: sign * (v / (selectedObj.stats.boundingBox?.size?.x || 1)) } 
+                                           } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Höhe (Y)</span>
+                                <input 
+                                  type="number" 
+                                  step="0.1" 
+                                  value={parseFloat(((selectedObj.stats.boundingBox?.size?.y || 1) * Math.abs(selectedObj.transform.scale.y)).toFixed(2))}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v) && v > 0) {
+                                        const sign = selectedObj.transform.scale.y < 0 ? -1 : 1;
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { 
+                                              ...selectedObj.transform, 
+                                              scale: { ...selectedObj.transform.scale, y: sign * (v / (selectedObj.stats.boundingBox?.size?.y || 1)) } 
+                                           } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Dicke (Z)</span>
+                                <input 
+                                  type="number" 
+                                  step="0.1" 
+                                  value={parseFloat(((selectedObj.stats.boundingBox?.size?.z || 1) * Math.abs(selectedObj.transform.scale.z)).toFixed(2))}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v) && v > 0) {
+                                        const sign = selectedObj.transform.scale.z < 0 ? -1 : 1;
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { 
+                                              ...selectedObj.transform, 
+                                              scale: { ...selectedObj.transform.scale, z: sign * (v / (selectedObj.stats.boundingBox?.size?.z || 1)) } 
+                                           } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                          </div>
+                       </div>
+
+                       <div>
+                          <span className="block text-[10px] text-slate-400 font-semibold mb-1">Position (mm)</span>
+                          <div className="grid grid-cols-3 gap-1">
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">X</span>
+                                <input 
+                                  type="number" 
+                                  step="1" 
+                                  value={selectedObj.transform.position.x}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v)) {
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { ...selectedObj.transform, position: { ...selectedObj.transform.position, x: v } } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Y</span>
+                                <input 
+                                  type="number" 
+                                  step="1" 
+                                  value={selectedObj.transform.position.y}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v)) {
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { ...selectedObj.transform, position: { ...selectedObj.transform.position, y: v } } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Z</span>
+                                <input 
+                                  type="number" 
+                                  step="1" 
+                                  value={selectedObj.transform.position.z}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v)) {
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { ...selectedObj.transform, position: { ...selectedObj.transform.position, z: v } } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                          </div>
+                       </div>
+
+                       <div>
+                          <span className="block text-[10px] text-slate-400 font-semibold mb-1">Rotation (°)</span>
+                          <div className="grid grid-cols-3 gap-1">
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">X</span>
+                                <input 
+                                  type="number" 
+                                  step="1" 
+                                  value={selectedObj.transform.rotation.x}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v)) {
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, x: v } } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Y</span>
+                                <input 
+                                  type="number" 
+                                  step="1" 
+                                  value={selectedObj.transform.rotation.y}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v)) {
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, y: v } } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                             <div>
+                                <span className="text-[8px] text-slate-500 block">Z</span>
+                                <input 
+                                  type="number" 
+                                  step="1" 
+                                  value={selectedObj.transform.rotation.z}
+                                  onChange={(e) => {
+                                     const v = parseFloat(e.target.value);
+                                     if (!isNaN(v)) {
+                                        handleUpdateObject(selectedObj.id, { 
+                                           transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, z: v } } 
+                                        });
+                                     }
+                                  }}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                />
+                             </div>
+                          </div>
+                       </div>
+
+                       <div>
+                          <span className="block text-[10px] text-slate-400 font-semibold mb-1">Spiegeln</span>
+                          <div className="grid grid-cols-3 gap-1">
+                             <button
+                               onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, x: selectedObj.transform.scale.x * -1 } } })}
+                               className={`px-1 py-1 rounded text-[10px] font-mono border transition-colors ${selectedObj.transform.scale.x < 0 ? 'bg-blue-900/50 border-blue-500 text-blue-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}
+                             >X Achse</button>
+                             <button
+                               onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, y: selectedObj.transform.scale.y * -1 } } })}
+                               className={`px-1 py-1 rounded text-[10px] font-mono border transition-colors ${selectedObj.transform.scale.y < 0 ? 'bg-blue-900/50 border-blue-500 text-blue-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}
+                             >Y Achse</button>
+                             <button
+                               onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, z: selectedObj.transform.scale.z * -1 } } })}
+                               className={`px-1 py-1 rounded text-[10px] font-mono border transition-colors ${selectedObj.transform.scale.z < 0 ? 'bg-blue-900/50 border-blue-500 text-blue-200' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}
+                             >Z Achse</button>
+                          </div>
+                       </div>
+
+                       <div>
+                          <span className="block text-[10px] text-slate-400 font-semibold mb-1">Farbe</span>
+                          <div className="flex gap-2 items-center">
+                             <input 
+                               type="color" 
+                               value={selectedObj.color || '#ffffff'}
+                               onChange={(e) => handleUpdateObject(selectedObj.id, { color: e.target.value })}
+                               className="w-8 h-8 p-0 bg-transparent border-0 cursor-pointer rounded-sm overflow-hidden"
+                             />
+                             <div className="flex gap-1 flex-wrap flex-1">
+                               {['#0ea5e9', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#ffffff', '#94a3b8'].map(preset => (
+                                 <button
+                                   key={preset}
+                                   type="button"
+                                   onClick={() => handleUpdateObject(selectedObj.id, { color: preset })}
+                                   className="w-4 h-4 rounded-sm border border-slate-700 hover:scale-110 transition-transform shadow-sm"
+                                   style={{ backgroundColor: preset }}
+                                   title={preset}
+                                 />
+                               ))}
+                             </div>
+                          </div>
+                       </div>
+
+                       <div className="pt-2 flex gap-1.5 justify-end">
+                          <button 
+                            type="button"
+                            onClick={() => {
+                               handleDelete(selectedObj.id);
+                               setContextMenu(null);
+                            }}
+                            className="px-2 py-1 bg-red-950/40 hover:bg-red-900 border border-red-800/60 rounded text-red-200 text-[10px] transition-colors"
+                          >
+                            Löschen
+                          </button>
+                       </div>
+                    </div>
+                 </div>
+               );
+           })()}
+           
+           {state.measure?.enabled && state.measure.p1 && state.measure.p2 && (() => {
+               const dist = Math.sqrt(
+                 Math.pow(state.measure.p2.x - state.measure.p1.x, 2) +
+                 Math.pow(state.measure.p2.y - state.measure.p1.y, 2) +
+                 Math.pow(state.measure.p2.z - state.measure.p1.z, 2)
+               );
+               const displayDist = state.measure.unit === 'in' ? (dist / 25.4) : dist;
+               return (
+                 <div className="absolute top-10 left-1/2 -translate-x-1/2 z-30 bg-slate-900/90 backdrop-blur border border-cyan-500/50 px-6 py-3 rounded-2xl shadow-2xl flex flex-col items-center animate-in fade-in slide-in-from-top-4">
+                    <span className="text-slate-400 text-[10px] uppercase font-bold tracking-widest mb-1">Distanz</span>
+                    <span className="font-mono text-cyan-400 text-2xl font-bold">
+                        {displayDist.toFixed(2)} {state.measure.unit === 'in' ? 'in' : 'mm'}
+                    </span>
+                 </div>
+               );
+            })()}
 
            {state.objects.length === 0 && (
                <div className="absolute inset-0 flex flex-col items-center justify-center space-y-6 pointer-events-none">

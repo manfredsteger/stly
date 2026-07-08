@@ -1,23 +1,43 @@
 
 import * as THREE from 'three';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader';
-import { STLExporter } from 'three/examples/jsm/exporters/STLExporter';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshStats, SceneObject } from '../types';
 
 export class STLService {
   private loader: STLLoader;
   private exporter: STLExporter;
+  private objExporter: OBJExporter;
+  private gltfExporter: GLTFExporter;
 
   constructor() {
     this.loader = new STLLoader();
     this.exporter = new STLExporter();
+    this.objExporter = new OBJExporter();
+    this.gltfExporter = new GLTFExporter();
   }
 
   async loadFromBuffer(buffer: ArrayBuffer): Promise<THREE.BufferGeometry> {
-    return this.loader.parse(buffer);
+    const geo = this.loader.parse(buffer);
+    const pos = geo.attributes.position;
+    if (pos) {
+      let hasNaN = false;
+      for (let i = 0; i < pos.count * pos.itemSize; i++) {
+        if (isNaN(pos.array[i]) || !isFinite(pos.array[i])) {
+          pos.array[i] = 0;
+          hasNaN = true;
+        }
+      }
+      if (hasNaN) {
+        console.warn("STL loader: Replaced NaN/Infinite values with 0 in position attribute.");
+      }
+    }
+    return geo;
   }
 
-  exportCombined(objects: SceneObject[]): Blob {
+  async exportCombined(objects: SceneObject[], format: 'stl' | 'obj' | 'gltf' = 'stl'): Promise<Blob> {
     const group = new THREE.Group();
     
     objects.forEach(obj => {
@@ -29,11 +49,33 @@ export class STLService {
         THREE.MathUtils.degToRad(obj.transform.rotation.y),
         THREE.MathUtils.degToRad(obj.transform.rotation.z)
       );
-      mesh.scale.setScalar(obj.transform.scale);
+      mesh.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
       mesh.updateMatrixWorld();
       group.add(mesh);
     });
 
+    if (format === 'obj') {
+      const result = this.objExporter.parse(group);
+      return new Blob([result], { type: 'text/plain' });
+    }
+
+    if (format === 'gltf') {
+      return new Promise((resolve, reject) => {
+        this.gltfExporter.parse(
+          group,
+          (gltf) => {
+            const blob = new Blob([gltf as ArrayBuffer], { type: 'model/gltf-binary' });
+            resolve(blob);
+          },
+          (error) => {
+            reject(error);
+          },
+          { binary: true } // Export as GLB
+        );
+      });
+    }
+
+    // Default to STL
     const result = this.exporter.parse(group, { binary: true });
     return new Blob([result], { type: 'application/octet-stream' });
   }
@@ -90,7 +132,12 @@ export class STLService {
 
     const newGeo = new THREE.BufferGeometry();
     newGeo.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
-    newGeo.computeVertexNormals();
+    if (newPositions.length === 0) {
+      newGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0);
+      newGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0));
+    } else {
+      newGeo.computeVertexNormals();
+    }
     return newGeo;
   }
 
@@ -115,6 +162,19 @@ export class STLService {
   }
 
   calculateStats(geometry: THREE.BufferGeometry): MeshStats {
+    if (!geometry || !geometry.attributes || !geometry.attributes.position || geometry.attributes.position.count === 0) {
+      return {
+        volume: 0,
+        surfaceArea: 0,
+        triangleCount: 0,
+        boundingBox: {
+          min: { x: 0, y: 0, z: 0 },
+          max: { x: 0, y: 0, z: 0 },
+          size: { x: 0, y: 0, z: 0 }
+        }
+      };
+    }
+
     let geo = geometry;
     if (geo.index) {
       geo = geo.toNonIndexed();
@@ -140,10 +200,14 @@ export class STLService {
     const faces = pos.count / 3;
     let volume = 0;
 
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+    const v3 = new THREE.Vector3();
+
     for (let i = 0; i < faces; i++) {
-      const v1 = new THREE.Vector3().fromBufferAttribute(pos, i * 3 + 0);
-      const v2 = new THREE.Vector3().fromBufferAttribute(pos, i * 3 + 1);
-      const v3 = new THREE.Vector3().fromBufferAttribute(pos, i * 3 + 2);
+      v1.fromBufferAttribute(pos, i * 3 + 0);
+      v2.fromBufferAttribute(pos, i * 3 + 1);
+      v3.fromBufferAttribute(pos, i * 3 + 2);
       volume += v1.dot(v2.cross(v3)) / 6.0;
     }
 

@@ -1,15 +1,21 @@
 
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import { AppState } from '../types';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { AppState, SceneObject } from '../types';
 
 interface ViewerProps {
   state: AppState;
   onMeasureClick?: (point: THREE.Vector3) => void;
+  onAlignClick?: (objectId: string, point: THREE.Vector3, normal: THREE.Vector3) => void;
+  onUpdateObject?: (id: string, updates: Partial<SceneObject>) => void;
+  onSaveHistory?: () => void;
+  onClickObject?: (id: string | null, multiSelect: boolean) => void;
+  onContextMenu?: (objectId: string, x: number, y: number) => void;
 }
 
-const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
+const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, onUpdateObject, onSaveHistory, onClickObject, onContextMenu }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -17,8 +23,18 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
   const objectsGroupRef = useRef<THREE.Group | null>(null);
   const helperGroupRef = useRef<THREE.Group | null>(null);
   const measureGroupRef = useRef<THREE.Group | null>(null);
+  const alignGroupRef = useRef<THREE.Group | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const transformControlsRef = useRef<TransformControls | null>(null);
   const prevObjectsCountRef = useRef(0);
+  const callbackRefs = useRef({ state, onUpdateObject, onSaveHistory });
+  const snapTargetRef = useRef<THREE.Vector3 | null>(null);
+  const snapMarkerRef = useRef<THREE.Mesh | null>(null);
+  const edgeHighlightRef = useRef<THREE.LineSegments | null>(null);
+
+  useEffect(() => {
+    callbackRefs.current = { state, onUpdateObject, onSaveHistory };
+  }, [state, onUpdateObject, onSaveHistory]);
 
   const fitCameraToScene = () => {
     if (!sceneRef.current || !cameraRef.current || !objectsGroupRef.current) return;
@@ -109,6 +125,83 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
     scene.add(measureGroup);
     measureGroupRef.current = measureGroup;
 
+    const alignGroup = new THREE.Group();
+    scene.add(alignGroup);
+    alignGroupRef.current = alignGroup;
+
+    const markerGeo = new THREE.SphereGeometry(1.5, 16, 16);
+    const markerMat = new THREE.MeshBasicMaterial({ color: 0x10b981, depthTest: false }); // emerald
+    const snapMarker = new THREE.Mesh(markerGeo, markerMat);
+    snapMarker.visible = false;
+    snapMarker.renderOrder = 999;
+    scene.add(snapMarker);
+    snapMarkerRef.current = snapMarker;
+
+    const edgeGeo = new THREE.BufferGeometry();
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x00ffff, depthTest: false, linewidth: 2 });
+    const edgeHighlight = new THREE.LineSegments(edgeGeo, edgeMat);
+    edgeHighlight.visible = false;
+    edgeHighlight.renderOrder = 999;
+    scene.add(edgeHighlight);
+    edgeHighlightRef.current = edgeHighlight;
+
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode(state.transformMode || 'translate');
+    transformControls.addEventListener('dragging-changed', (event) => {
+      if (controlsRef.current) {
+        controlsRef.current.enabled = !event.value;
+      }
+      const { state: currState, onUpdateObject: currUpdate, onSaveHistory: currSaveHistory } = callbackRefs.current;
+      
+      if (event.value) { // Started dragging
+        if (currSaveHistory) currSaveHistory();
+      } else { // Stopped dragging
+        const obj = transformControls.object;
+        if (obj && obj.userData?.id) {
+          
+          // Apply snap if we were snapping
+          if (currState.snapToEdge && currState.transformMode === 'translate' && snapTargetRef.current) {
+             obj.position.copy(snapTargetRef.current);
+             snapTargetRef.current = null;
+             if (snapMarkerRef.current) snapMarkerRef.current.visible = false;
+             if (edgeHighlightRef.current) edgeHighlightRef.current.visible = false;
+          }
+
+          if (currUpdate) {
+            const targetObject = currState.objects.find(o => o.id === obj.userData.id);
+            if (targetObject) {
+              const euler = obj.rotation;
+              const newRotation = {
+                x: THREE.MathUtils.radToDeg(euler.x),
+                y: THREE.MathUtils.radToDeg(euler.y),
+                z: THREE.MathUtils.radToDeg(euler.z)
+              };
+              const newPosition = {
+                x: obj.position.x,
+                y: obj.position.y,
+                z: obj.position.z
+              };
+              const newScale = {
+                x: obj.scale.x,
+                y: obj.scale.y,
+                z: obj.scale.z
+              };
+              currUpdate(obj.userData.id, { 
+                transform: { 
+                  ...targetObject.transform, 
+                  rotation: newRotation,
+                  position: newPosition,
+                  scale: newScale
+                } 
+              });
+            }
+          }
+        }
+      }
+    });
+    scene.add(transformControls.getHelper());
+    transformControlsRef.current = transformControls;
+
     const resizeObserver = new ResizeObserver((entries) => {
       if (!entries || entries.length === 0) return;
       const { width, height } = entries[0].contentRect;
@@ -131,6 +224,9 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
 
     return () => {
       resizeObserver.disconnect();
+      if (transformControlsRef.current) {
+        transformControlsRef.current.dispose();
+      }
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
@@ -138,9 +234,105 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
     };
   }, []);
 
+  // Click / Double click handler for selection
+  useEffect(() => {
+    if (!onClickObject || !rendererRef.current || !cameraRef.current || !objectsGroupRef.current) return;
+    
+    let pointerDownPos = new THREE.Vector2();
+    let isDragging = false;
+    
+    const handlePointerDown = (e: PointerEvent) => {
+        pointerDownPos.set(e.clientX, e.clientY);
+        isDragging = false;
+    };
+    
+    const handlePointerMove = (e: PointerEvent) => {
+        if (pointerDownPos.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 5) {
+            isDragging = true;
+        }
+    };
+    
+    const handleClick = (e: Event) => {
+        const mouseEvent = e as MouseEvent;
+        // Prevent selection if we are currently using measure or align tools
+        if (state.measure?.enabled || state.align?.enabled) return;
+
+        // For pointerup, we check if it was a drag
+        if (e.type === 'pointerup' && isDragging) return;
+
+        const rect = rendererRef.current!.domElement.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+            ((mouseEvent.clientX - rect.left) / rect.width) * 2 - 1,
+            -((mouseEvent.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current!);
+        
+        // We only want to intersect with visible objects
+        const children = objectsGroupRef.current!.children.filter(c => 
+             (c instanceof THREE.Mesh || c instanceof THREE.Points) && c.visible
+        );
+        
+        const intersects = raycaster.intersectObjects(children, false);
+        if (intersects.length > 0) {
+            const object = intersects[0].object;
+            if (object.userData?.id) {
+                onClickObject(object.userData.id, mouseEvent.shiftKey || mouseEvent.ctrlKey || mouseEvent.metaKey);
+            }
+        } else {
+            onClickObject(null, mouseEvent.shiftKey || mouseEvent.ctrlKey || mouseEvent.metaKey);
+        }
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+        e.preventDefault();
+        if (state.measure?.enabled || state.align?.enabled) return;
+
+        const rect = rendererRef.current!.domElement.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current!);
+        
+        const children = objectsGroupRef.current!.children.filter(c => 
+             (c instanceof THREE.Mesh || c instanceof THREE.Points) && c.visible
+        );
+        
+        const intersects = raycaster.intersectObjects(children, false);
+        if (intersects.length > 0) {
+            const object = intersects[0].object;
+            if (object.userData?.id) {
+                onClickObject(object.userData.id, false);
+                if (onContextMenu) {
+                    onContextMenu(object.userData.id, e.clientX, e.clientY);
+                }
+            }
+        }
+    };
+    
+    const domElement = rendererRef.current.domElement;
+    domElement.addEventListener('pointerdown', handlePointerDown);
+    domElement.addEventListener('pointermove', handlePointerMove);
+    domElement.addEventListener('pointerup', handleClick);
+    domElement.addEventListener('dblclick', handleClick);
+    domElement.addEventListener('contextmenu', handleContextMenu);
+    
+    return () => {
+        domElement.removeEventListener('pointerdown', handlePointerDown);
+        domElement.removeEventListener('pointermove', handlePointerMove);
+        domElement.removeEventListener('pointerup', handleClick);
+        domElement.removeEventListener('dblclick', handleClick);
+        domElement.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, [onClickObject, onContextMenu, state.measure?.enabled, state.align?.enabled]);
+
   // Measure tool click handler
   useEffect(() => {
-    if (!state.measure.enabled || !rendererRef.current || !cameraRef.current || !objectsGroupRef.current) return;
+    if (!state.measure?.enabled || !rendererRef.current || !cameraRef.current || !objectsGroupRef.current) return;
     
     let pointerDownPos = new THREE.Vector2();
     let isDragging = false;
@@ -189,7 +381,250 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
         domElement.removeEventListener('pointermove', handlePointerMove);
         domElement.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [state.measure.enabled, onMeasureClick]);
+  }, [state.measure?.enabled, onMeasureClick]);
+
+  // Align tool click handler
+  useEffect(() => {
+    if (!state.align?.enabled || !rendererRef.current || !cameraRef.current || !objectsGroupRef.current) return;
+    
+    let pointerDownPos = new THREE.Vector2();
+    let isDragging = false;
+    
+    const handlePointerDown = (e: PointerEvent) => {
+        pointerDownPos.set(e.clientX, e.clientY);
+        isDragging = false;
+    };
+    
+    const handlePointerMove = (e: PointerEvent) => {
+        if (pointerDownPos.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 5) {
+            isDragging = true;
+        }
+    };
+    
+    const handlePointerUp = (e: PointerEvent) => {
+        if (isDragging || !onAlignClick || !rendererRef.current) return;
+        
+        const rect = rendererRef.current.domElement.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, cameraRef.current!);
+        
+        const children = objectsGroupRef.current!.children.filter(c => 
+             (c instanceof THREE.Mesh || c instanceof THREE.Points) && c.visible
+        );
+        
+        const intersects = raycaster.intersectObjects(children, false);
+        if (intersects.length > 0) {
+            const intersect = intersects[0];
+            const object = intersect.object;
+            if (object.userData?.id && intersect.face) {
+                const normalMatrix = new THREE.Matrix3().getNormalMatrix(object.matrixWorld);
+                const worldNormal = intersect.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+                onAlignClick(object.userData.id, intersect.point, worldNormal);
+            }
+        }
+    };
+    
+    const domElement = rendererRef.current.domElement;
+    domElement.addEventListener('pointerdown', handlePointerDown);
+    domElement.addEventListener('pointermove', handlePointerMove);
+    domElement.addEventListener('pointerup', handlePointerUp);
+    
+    return () => {
+        domElement.removeEventListener('pointerdown', handlePointerDown);
+        domElement.removeEventListener('pointermove', handlePointerMove);
+        domElement.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [state.align?.enabled, onAlignClick]);
+
+  // Snap to edge during translate
+  useEffect(() => {
+    if (!rendererRef.current || !cameraRef.current || !objectsGroupRef.current || !transformControlsRef.current || !snapMarkerRef.current || !edgeHighlightRef.current) return;
+    
+    const domElement = rendererRef.current.domElement;
+    const transformControls = transformControlsRef.current;
+    
+    let targetEdgesGeo: THREE.EdgesGeometry | null = null;
+    let targetMesh: THREE.Mesh | null = null;
+    let draggedEdgesGeo: THREE.EdgesGeometry | null = null;
+    let draggedMesh: THREE.Mesh | null = null;
+
+    const onDraggingChanged = (event: any) => {
+        if (event.value) {
+            const obj = transformControls.object;
+            if (obj && obj instanceof THREE.Mesh) {
+                draggedMesh = obj;
+                obj.geometry.computeBoundingBox();
+                const box = obj.geometry.boundingBox || new THREE.Box3();
+                let w = 0.1, h = 0.1, d = 0.1, cx = 0, cy = 0, cz = 0;
+                if (!box.isEmpty() && isFinite(box.max.x) && isFinite(box.min.x)) {
+                    w = Math.max(0.1, box.max.x - box.min.x);
+                    h = Math.max(0.1, box.max.y - box.min.y);
+                    d = Math.max(0.1, box.max.z - box.min.z);
+                    cx = (box.max.x + box.min.x) / 2;
+                    cy = (box.max.y + box.min.y) / 2;
+                    cz = (box.max.z + box.min.z) / 2;
+                }
+                const boxGeo = new THREE.BoxGeometry(w, h, d);
+                boxGeo.translate(cx, cy, cz);
+                draggedEdgesGeo = new THREE.EdgesGeometry(boxGeo);
+                boxGeo.dispose();
+            }
+        } else {
+            draggedMesh = null;
+            if (draggedEdgesGeo) { draggedEdgesGeo.dispose(); draggedEdgesGeo = null; }
+            targetMesh = null;
+            if (targetEdgesGeo) { targetEdgesGeo.dispose(); targetEdgesGeo = null; }
+            if (edgeHighlightRef.current) edgeHighlightRef.current.visible = false;
+        }
+    };
+    transformControls.addEventListener('dragging-changed', onDraggingChanged);
+    
+    const handlePointerMove = (e: PointerEvent) => {
+      const snapMarker = snapMarkerRef.current;
+      const edgeHighlight = edgeHighlightRef.current;
+      
+      if (!transformControls || !snapMarker || !edgeHighlight) return;
+      
+      const currState = callbackRefs.current.state;
+
+      if (!currState.snapToEdge || currState.transformMode !== 'translate' || !transformControls.dragging) {
+          snapMarker.visible = false;
+          snapTargetRef.current = null;
+          edgeHighlight.visible = false;
+          return;
+      }
+      
+      const rect = domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, cameraRef.current!);
+      
+      const obj = transformControls.object;
+      const children = objectsGroupRef.current!.children.filter(c => 
+           (c instanceof THREE.Mesh || c instanceof THREE.Points) && c.visible && c !== obj
+      );
+      
+      const intersects = raycaster.intersectObjects(children, false);
+      if (intersects.length > 0) {
+          const point = intersects[0].point;
+          const intersectObj = intersects[0].object;
+
+          if (intersectObj !== targetMesh && intersectObj instanceof THREE.Mesh) {
+              targetMesh = intersectObj;
+              if (targetEdgesGeo) targetEdgesGeo.dispose();
+              intersectObj.geometry.computeBoundingBox();
+              const box = intersectObj.geometry.boundingBox || new THREE.Box3();
+              let w = 0.1, h = 0.1, d = 0.1, cx = 0, cy = 0, cz = 0;
+              if (!box.isEmpty() && isFinite(box.max.x) && isFinite(box.min.x)) {
+                  w = Math.max(0.1, box.max.x - box.min.x);
+                  h = Math.max(0.1, box.max.y - box.min.y);
+                  d = Math.max(0.1, box.max.z - box.min.z);
+                  cx = (box.max.x + box.min.x) / 2;
+                  cy = (box.max.y + box.min.y) / 2;
+                  cz = (box.max.z + box.min.z) / 2;
+              }
+              const boxGeo = new THREE.BoxGeometry(w, h, d);
+              boxGeo.translate(cx, cy, cz);
+              targetEdgesGeo = new THREE.EdgesGeometry(boxGeo);
+              boxGeo.dispose();
+          }
+
+          const highlightPoints: THREE.Vector3[] = [];
+          let snapPoint = point.clone();
+          let minDist = Infinity;
+          
+          const camDist = cameraRef.current!.position.distanceTo(point);
+          const snapThreshold = camDist * 0.05;
+          const snapThresholdSq = snapThreshold * snapThreshold;
+
+          const v1 = new THREE.Vector3();
+          const v2 = new THREE.Vector3();
+          const closest = new THREE.Vector3();
+          const line = new THREE.Line3();
+
+          // Find edges on target
+          if (targetEdgesGeo && targetMesh) {
+              const pos = targetEdgesGeo.attributes.position;
+              const mat = targetMesh.matrixWorld;
+              for (let i = 0; i < pos.count; i += 2) {
+                  v1.fromBufferAttribute(pos, i).applyMatrix4(mat);
+                  v2.fromBufferAttribute(pos, i + 1).applyMatrix4(mat);
+                  
+                  if (v1.distanceToSquared(point) > snapThresholdSq * 4 && v2.distanceToSquared(point) > snapThresholdSq * 4) continue;
+
+                  line.set(v1, v2);
+                  line.closestPointToPoint(point, true, closest);
+                  const distSq = closest.distanceToSquared(point);
+                  
+                  if (distSq < snapThresholdSq) {
+                      highlightPoints.push(v1.clone(), v2.clone());
+                      if (distSq < minDist) {
+                          minDist = distSq;
+                          snapPoint.copy(closest);
+                      }
+                  }
+              }
+          }
+
+          // Find edges on source
+          if (draggedEdgesGeo && draggedMesh) {
+              const pos = draggedEdgesGeo.attributes.position;
+              const mat = draggedMesh.matrixWorld;
+              for (let i = 0; i < pos.count; i += 2) {
+                  v1.fromBufferAttribute(pos, i).applyMatrix4(mat);
+                  v2.fromBufferAttribute(pos, i + 1).applyMatrix4(mat);
+                  
+                  if (v1.distanceToSquared(point) > snapThresholdSq * 4 && v2.distanceToSquared(point) > snapThresholdSq * 4) continue;
+
+                  line.set(v1, v2);
+                  line.closestPointToPoint(point, true, closest);
+                  if (closest.distanceToSquared(point) < snapThresholdSq) {
+                      highlightPoints.push(v1.clone(), v2.clone());
+                  }
+              }
+          }
+
+          snapMarker.position.copy(snapPoint);
+          snapMarker.visible = true;
+          snapTargetRef.current = snapPoint.clone();
+
+          if (highlightPoints.length > 0) {
+              edgeHighlight.geometry.setFromPoints(highlightPoints);
+              edgeHighlight.visible = true;
+          } else {
+              edgeHighlight.visible = false;
+          }
+
+      } else {
+          snapMarker.visible = false;
+          snapTargetRef.current = null;
+          edgeHighlight.visible = false;
+      }
+    };
+    
+    window.addEventListener('pointermove', handlePointerMove);
+    return () => {
+        transformControls.removeEventListener('dragging-changed', onDraggingChanged);
+        window.removeEventListener('pointermove', handlePointerMove);
+        if (targetEdgesGeo) targetEdgesGeo.dispose();
+        if (draggedEdgesGeo) draggedEdgesGeo.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (transformControlsRef.current && state.transformMode) {
+      transformControlsRef.current.setMode(state.transformMode);
+    }
+  }, [state.transformMode]);
 
   // Synchronize Scene Objects
   useEffect(() => {
@@ -228,12 +663,12 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
     state.objects.forEach(obj => {
       if (!obj.visible) return;
 
-      const isSelected = obj.id === state.selectedId;
+      const isSelected = obj.id === state.selectedId || (state.selectedIds && state.selectedIds.includes(obj.id));
       const clippingPlanes: THREE.Plane[] = [];
       let clipIntersection = false;
 
       // Only the selected object gets the active slice
-      if (isSelected && state.slice.enabled) {
+      if (isSelected && state.slice?.enabled) {
         const normal = new THREE.Vector3(0, 0, 1).applyEuler(
            new THREE.Euler(
                THREE.MathUtils.degToRad(state.slice.rotation.x),
@@ -262,23 +697,46 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
         }
       }
 
+      let isTarget = false;
+      let isCutter = false;
+      if (state.boolean?.enabled && state.boolean?.preview) {
+          if (obj.id === state.boolean.targetId) isTarget = true;
+          if (obj.id === state.boolean.cutterId) isCutter = true;
+      }
+
+      let overrideColor = obj.color;
+      let overrideOpacity = isSelected ? 1 : 0.6;
+      let overrideTransparent = true;
+      let isWireframe = state.viewMode === 'wireframe';
+
+      if (isCutter) {
+          overrideColor = state.boolean.operation === 'subtract' ? '#ef4444' : (state.boolean.operation === 'intersect' ? '#eab308' : '#3b82f6');
+          overrideOpacity = 0.4;
+          overrideTransparent = true;
+          isWireframe = true;
+      } else if (isTarget) {
+          overrideOpacity = 1;
+      } else if (state.boolean?.enabled && state.boolean?.preview) {
+          overrideOpacity = 0.1; // Dim other objects
+      }
+
       const matProps: any = {
-        color: obj.color,
+        color: overrideColor,
         side: THREE.DoubleSide,
         flatShading: true,
         clippingPlanes: clippingPlanes.length > 0 ? clippingPlanes : null,
         clipIntersection,
-        transparent: true,
-        opacity: isSelected ? 1 : 0.6
+        transparent: overrideTransparent,
+        opacity: overrideOpacity
       };
 
       let visualObject: THREE.Object3D;
       if (state.viewMode === 'points') {
-        const pointsMaterial = new THREE.PointsMaterial({ color: obj.color, size: 1.5 });
+        const pointsMaterial = new THREE.PointsMaterial({ color: overrideColor, size: 1.5 });
         visualObject = new THREE.Points(obj.geometry, pointsMaterial);
       } else {
         let material;
-        if (state.viewMode === 'wireframe') {
+        if (isWireframe) {
           material = new THREE.MeshBasicMaterial({ ...matProps, wireframe: true });
         } else if (state.viewMode === 'transparent') {
           material = new THREE.MeshPhongMaterial({ ...matProps, shininess: 60, transparent: true, opacity: 0.3, depthWrite: false });
@@ -295,15 +753,30 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
         THREE.MathUtils.degToRad(obj.transform.rotation.y),
         THREE.MathUtils.degToRad(obj.transform.rotation.z)
       );
-      visualObject.scale.setScalar(obj.transform.scale);
+      visualObject.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
       
       if (isSelected) {
           const box = new THREE.BoxHelper(visualObject, 0x3b82f6);
           objectsGroupRef.current?.add(box);
       }
 
-      objectsGroupRef.current?.add(visualObject);
+      console.log("Adding visual object:", obj.name, "pos:", visualObject.position, "scale:", visualObject.scale, "verts:", obj.geometry.attributes.position?.count, "box:", obj.geometry.boundingBox); objectsGroupRef.current?.add(visualObject);
     });
+
+    if (transformControlsRef.current) {
+      if (state.selectedId && !state.measure?.enabled) {
+        const activeMesh = objectsGroupRef.current.children.find(c => c.userData?.id === state.selectedId);
+        if (activeMesh) {
+          if (transformControlsRef.current.object !== activeMesh) {
+            transformControlsRef.current.attach(activeMesh);
+          }
+        } else {
+          transformControlsRef.current.detach();
+        }
+      } else {
+        transformControlsRef.current.detach();
+      }
+    }
 
     const currentCount = state.objects.length;
     const prevCount = prevObjectsCountRef.current;
@@ -313,14 +786,14 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
       }, 50);
     }
     prevObjectsCountRef.current = currentCount;
-  }, [state.objects, state.selectedId, state.slice, state.viewMode]);
+  }, [state.objects, state.selectedId, state.selectedIds, state.slice, state.viewMode, state.boolean]);
 
   // Measure Visuals
   useEffect(() => {
     if (!measureGroupRef.current) return;
     measureGroupRef.current.clear();
     
-    if (!state.measure.enabled) return;
+    if (!state.measure?.enabled) return;
     
     const p1 = state.measure.p1;
     const p2 = state.measure.p2;
@@ -351,6 +824,31 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
     
   }, [state.measure]);
 
+  // Align Visuals
+  useEffect(() => {
+    if (!alignGroupRef.current) return;
+    alignGroupRef.current.clear();
+
+    if (!state.align?.enabled) return;
+    if (state.align.step === 'select_target' && state.align.source) {
+        const source = state.align.source;
+        const pos = new THREE.Vector3(source.point.x, source.point.y, source.point.z);
+        const normal = new THREE.Vector3(source.normal.x, source.normal.y, source.normal.z);
+
+        const geo = new THREE.SphereGeometry(1.5, 16, 16);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, depthTest: false });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(pos);
+        mesh.renderOrder = 999;
+        alignGroupRef.current.add(mesh);
+
+        const arrowHelper = new THREE.ArrowHelper(normal, pos, 10, 0xf59e0b, 3, 2);
+        // @ts-ignore
+        arrowHelper.renderOrder = 999;
+        alignGroupRef.current.add(arrowHelper);
+    }
+  }, [state.align]);
+
   // Slicing Helpers
   useEffect(() => {
     if (!helperGroupRef.current || !state.selectedId) {
@@ -362,7 +860,7 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
     const selectedObj = state.objects.find(o => o.id === state.selectedId);
     if (!selectedObj) return;
 
-    if (state.slice.enabled) {
+    if (state.slice?.enabled) {
         const size = 1000;
         const planeGeo = new THREE.PlaneGeometry(size, size);
         
@@ -398,7 +896,7 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
         }
     }
 
-    if (state.split.enabled) {
+    if (state.split?.enabled) {
         const size = 1000;
         const planeGeo = new THREE.PlaneGeometry(size, size);
         const mat = new THREE.MeshBasicMaterial({ color: 0xa855f7, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false });
@@ -461,7 +959,7 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick }) => {
         const arrow = new THREE.ArrowHelper(dir, mesh.position, 20, 0xa855f7, 5, 2);
         helperGroupRef.current?.add(arrow);
     }
-    if (state.extend.enabled) {
+    if (state.extend?.enabled) {
         const size = 1000;
         const planeGeo = new THREE.PlaneGeometry(size, size);
         const mat = new THREE.MeshBasicMaterial({ color: 0xea580c, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false });
