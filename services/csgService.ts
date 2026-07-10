@@ -1,3 +1,4 @@
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Brush, Evaluator, SUBTRACTION, ADDITION, INTERSECTION } from 'three-bvh-csg';
@@ -48,7 +49,7 @@ const standardizeGeo = (geo: THREE.BufferGeometry) => {
     if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
     finalGeo.computeBoundsTree();
     console.log("standardizeGeo final attributes:", Object.keys(finalGeo.attributes));
-    return finalGeo;
+    return mergeVertices(finalGeo, 1e-4);
 };
 
 export const csgService = {
@@ -115,7 +116,7 @@ export const csgService = {
     
     const geo = res.geometry.clone();
     if (geo.attributes.position && geo.attributes.position.count === 0) { geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); geo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { geo.computeVertexNormals(); }
-    return geo;
+    return mergeVertices(geo, 1e-4);
   },
 
   createSplitCutterGeometry: (splitArgs: SplitState, size: number = 5000): THREE.BufferGeometry => {
@@ -312,18 +313,20 @@ export const csgService = {
     cutterRef.position.set(position.x, position.y, position.z);
     cutterRef.updateMatrixWorld(true);
 
-    const invMat = cutterRef.matrixWorld.clone().invert();
+    const worldToCutter = cutterRef.matrixWorld.clone().invert();
+    const targetToCutter = worldToCutter.multiply(bTarget.matrixWorld);
+    const cutterToTarget = targetToCutter.clone().invert();
     
     // Process Slice
-    sliceBrush.geometry.applyMatrix4(invMat);
+    sliceBrush.geometry.applyMatrix4(targetToCutter);
     sliceBrush.geometry.scale(1, 1, amount / sliceThickness);
     sliceBrush.geometry.translate(0, 0, amount / 2);
-    sliceBrush.geometry.applyMatrix4(cutterRef.matrixWorld);
+    sliceBrush.geometry.applyMatrix4(cutterToTarget);
 
     // Process Part B (move it by amount)
-    partB.geometry.applyMatrix4(invMat);
+    partB.geometry.applyMatrix4(targetToCutter);
     partB.geometry.translate(0, 0, amount);
-    partB.geometry.applyMatrix4(cutterRef.matrixWorld);
+    partB.geometry.applyMatrix4(cutterToTarget);
 
     // Merge them together
     let finalBrush = evalCSG.evaluate(partA, sliceBrush, ADDITION);
@@ -336,11 +339,10 @@ export const csgService = {
     // Actually, `bTarget` was in world space. `finalGeo` is in world space.
     // If we want to keep the object's transform in the SceneObject the same,
     // we should apply the inverse of the object's world matrix to finalGeo.
-    const invTargetMat = targetMesh.matrixWorld.clone().invert();
-    finalGeo.applyMatrix4(invTargetMat);
+    // removed applyMatrix4
 
     if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
-    return finalGeo;
+    return mergeVertices(finalGeo, 1e-4);
   },
 
   mergeObjects: (objects: import('../types').SceneObject[]): THREE.BufferGeometry | null => {
@@ -380,10 +382,11 @@ export const csgService = {
     if (!currentBrush) return null;
 
     const mergedGeo = currentBrush.geometry.clone();
+    mergedGeo.applyMatrix4(currentBrush.matrixWorld);
     // Re-center geometry? We could, but then it moves everything. Better keep the absolute coordinate space!
     // But since it's an object with transform 0,0,0, its vertices are essentially in world space.
     if (mergedGeo.attributes.position && mergedGeo.attributes.position.count === 0) { mergedGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); mergedGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { mergedGeo.computeVertexNormals(); }
-    return mergedGeo;
+    return mergeVertices(mergedGeo, 1e-4);
   },
 
   subtractObjects: (targetGeo: THREE.BufferGeometry, cutterGeo: THREE.BufferGeometry, targetTransform: any, cutterTransform: any): THREE.BufferGeometry | null => {
@@ -418,11 +421,10 @@ export const csgService = {
      if (!res) return null;
      
      const finalGeo = res.geometry.clone();
-     const invTargetMat = bTarget.matrixWorld.clone().invert();
-     finalGeo.applyMatrix4(invTargetMat);
+     // removed applyMatrix4
      if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
 
-     return finalGeo;
+     return mergeVertices(finalGeo, 1e-4);
   },
 
   intersectObjects: (targetGeo: THREE.BufferGeometry, cutterGeo: THREE.BufferGeometry, targetTransform: any, cutterTransform: any): THREE.BufferGeometry | null => {
@@ -457,11 +459,10 @@ export const csgService = {
      if (!res) return null;
      
      const finalGeo = res.geometry.clone();
-     const invTargetMat = bTarget.matrixWorld.clone().invert();
-     finalGeo.applyMatrix4(invTargetMat);
+     // removed applyMatrix4
      if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
 
-     return finalGeo;
+     return mergeVertices(finalGeo, 1e-4);
   },
 
   unionObjects: (targetGeo: THREE.BufferGeometry, cutterGeo: THREE.BufferGeometry, targetTransform: any, cutterTransform: any): THREE.BufferGeometry | null => {
@@ -496,11 +497,10 @@ export const csgService = {
      if (!res) return null;
      
      const finalGeo = res.geometry.clone();
-     const invTargetMat = bTarget.matrixWorld.clone().invert();
-     finalGeo.applyMatrix4(invTargetMat);
+     // removed applyMatrix4
      if (finalGeo.attributes.position && finalGeo.attributes.position.count === 0) { finalGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0); finalGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)); } else { finalGeo.computeVertexNormals(); }
 
-     return finalGeo;
+     return mergeVertices(finalGeo, 1e-4);
   },
 
   unionGeometries: (geo1: THREE.BufferGeometry, geo2: THREE.BufferGeometry): THREE.BufferGeometry => {

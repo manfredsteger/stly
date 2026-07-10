@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import * as THREE from 'three';
-import { Upload, Download, Box, Activity, Package, Scissors, Sparkles, Move, Layers, UploadCloud, Undo2, Redo2 } from 'lucide-react';
+import { Upload, Download, Box, Activity, Package, Scissors, Sparkles, Move, Layers, UploadCloud, Undo2, Redo2, Lock, Unlock } from 'lucide-react';
 import Viewer from './components/Viewer';
 import Controls from './components/Controls';
 import { AppState, SceneObject, SliceState, TransformationState, SplitState, ExtendState } from './types';
@@ -125,8 +125,44 @@ const INITIAL_STATE: AppState = {
   snapToEdge: false,
 };
 
+const DimensionInput = ({ value, onChange, label }: { value: number, onChange: (v: number) => void, label: string }) => {
+  const [strValue, setStrValue] = useState(value.toFixed(2));
+  
+  useEffect(() => {
+    if (Math.abs(parseFloat(strValue) - value) > 0.001) {
+      setStrValue(value.toFixed(2));
+    }
+  }, [value]);
+
+  return (
+    <div>
+      <span className="text-[8px] text-slate-500 block">{label}</span>
+      <input 
+        type="text" 
+        value={strValue}
+        onChange={(e) => {
+          let val = e.target.value.replace(',', '.');
+          if (/^-?\d*\.?\d*$/.test(val)) {
+            setStrValue(val);
+            const num = parseFloat(val);
+            if (!isNaN(num)) onChange(num);
+          }
+        }}
+        onBlur={() => setStrValue(value.toFixed(2))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            setStrValue(value.toFixed(2));
+          }
+        }}
+        className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+      />
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(INITIAL_STATE);
+  const [uniformScale, setUniformScale] = useState(true);
   const [pastObjects, setPastObjects] = useState<SceneObject[][]>([]);
   const [futureObjects, setFutureObjects] = useState<SceneObject[][]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -317,7 +353,7 @@ const getHighContrastColor = (): string => {
             id: Math.random().toString(36).substr(2, 9),
             name: `${selected.name}_Slice`,
             geometry: newGeo,
-            transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, // Transform is baked in
+            transform: { ...selected.transform },
             visible: true,
             color: selected.color,
             stats: stlService.calculateStats(newGeo)
@@ -349,7 +385,7 @@ const getHighContrastColor = (): string => {
               id: Math.random().toString(36).substr(2, 9),
               name: `${selected.name}_A`,
               geometry: result.partA,
-              transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, // baked transform
+              transform: { ...selected.transform },
               visible: true,
               color: selected.color,
               stats: stlService.calculateStats(result.partA)
@@ -359,7 +395,7 @@ const getHighContrastColor = (): string => {
             id: Math.random().toString(36).substr(2, 9),
             name: `${selected.name}_B`,
             geometry: result.partB,
-            transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, // baked transform
+            transform: { ...selected.transform },
             visible: true,
             color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0'), // slightly different color
             stats: stlService.calculateStats(result.partB)
@@ -430,6 +466,34 @@ const getHighContrastColor = (): string => {
               stats: stlService.calculateStats(newGeo)
           } : o)
       }));
+  };
+
+  
+  const handleRepairObject = async (id: string) => {
+      const obj = state.objects.find(o => o.id === id);
+      if (!obj) return;
+      
+      try {
+          setIsProcessing(true);
+          const { mergeVertices } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
+          let geometry = obj.geometry;
+          if (geometry.index) {
+              geometry = geometry.toNonIndexed();
+          }
+          const repaired = mergeVertices(geometry, 1e-4);
+          repaired.computeVertexNormals();
+          
+          pushHistory();
+          const { stlService } = await import('./services/stlService');
+          handleUpdateObject(id, {
+              geometry: repaired,
+              stats: stlService.calculateStats(repaired)
+          });
+      } catch (err) {
+          console.error("Repair failed", err);
+      } finally {
+          setIsProcessing(false);
+      }
   };
 
   const handleApplyScale = (id: string) => {
@@ -512,12 +576,14 @@ const getHighContrastColor = (): string => {
           };
 
           setState(prev => {
-              const others = prev.objects.filter(o => o.id !== targetObj.id && o.id !== cutterObj.id);
-              // Hide the cutter, remove the original target
               const newCutterObj = { ...cutterObj, visible: false };
               return {
                   ...prev,
-                  objects: [...others, newCutterObj, newObj],
+                  objects: prev.objects.map(o => {
+                      if (o.id === targetObj.id) return newObj;
+                      if (o.id === cutterObj.id) return newCutterObj;
+                      return o;
+                  }),
                   selectedId: newObj.id,
                   selectedIds: [newObj.id],
                   boolean: { ...prev.boolean, enabled: false }
@@ -544,7 +610,7 @@ const getHighContrastColor = (): string => {
           const { csgService } = await import('./services/csgService');
           const { stlService } = await import('./services/stlService');
 
-          let newObjects: SceneObject[] = [];
+          let processedObjects = new Map<string, SceneObject | null>();
           
           for (const targetObj of state.objects) {
               if (targetObj.id === cutterId || !targetObj.visible) {
@@ -560,28 +626,35 @@ const getHighContrastColor = (): string => {
 
               if (resultGeo) {
                   if (resultGeo.attributes.position && resultGeo.attributes.position.count > 0) {
-                      newObjects.push({
+                      processedObjects.set(targetObj.id, {
                           ...targetObj,
                           id: Math.random().toString(36).substr(2, 9),
                           geometry: resultGeo,
                           stats: stlService.calculateStats(resultGeo)
                       });
+                  } else {
+                      // object is completely erased
+                      processedObjects.set(targetObj.id, null);
                   }
-                  // if 0 vertices, the object is completely erased, so don't push anything
               } else {
-                  // If it fails, just keep original
-                  newObjects.push(targetObj);
+                  processedObjects.set(targetObj.id, targetObj);
               }
           }
 
           pushHistory();
 
           setState(prev => {
-              // Get hidden objects
-              const hiddenObjects = prev.objects.filter(o => !o.visible && o.id !== cutterId);
+              const nextObjects = prev.objects.map(o => {
+                  if (o.id === cutterId) return null; // remove cutter
+                  if (processedObjects.has(o.id)) {
+                      return processedObjects.get(o.id) as SceneObject | null;
+                  }
+                  return o;
+              }).filter(Boolean) as SceneObject[];
+
               return {
                   ...prev,
-                  objects: [...hiddenObjects, ...newObjects],
+                  objects: nextObjects,
                   selectedId: null,
                   selectedIds: []
               };
@@ -781,6 +854,17 @@ const getHighContrastColor = (): string => {
       link.href = URL.createObjectURL(blob);
       const extension = format === 'gltf' ? 'glb' : format;
       link.download = `assembly_${new Date().getTime()}.${extension}`;
+      link.click();
+  };
+
+  
+  const handleExportAll = async (format: 'stl' | 'obj' | 'gltf') => {
+      const allObjectsVisible = state.objects.map(o => ({ ...o, visible: true }));
+      const blob = await stlService.exportCombined(allObjectsVisible, format);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      const extension = format === 'gltf' ? 'glb' : format;
+      link.download = `scene_${new Date().getTime()}.${extension}`;
       link.click();
   };
 
@@ -987,6 +1071,42 @@ const getHighContrastColor = (): string => {
       });
   };
 
+  
+  const handleAlignToFloor = (id: string) => {
+      const obj = state.objects.find(o => o.id === id);
+      if (!obj) return;
+
+      const group = new THREE.Group();
+      group.position.set(obj.transform.position.x, obj.transform.position.y, obj.transform.position.z);
+      group.rotation.set(
+          THREE.MathUtils.degToRad(obj.transform.rotation.x),
+          THREE.MathUtils.degToRad(obj.transform.rotation.y),
+          THREE.MathUtils.degToRad(obj.transform.rotation.z)
+      );
+      group.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
+      
+      const mesh = new THREE.Mesh(obj.geometry);
+      group.add(mesh);
+      group.updateMatrixWorld(true);
+      
+      const box = new THREE.Box3().setFromObject(group);
+      const minZ = box.min.z;
+      
+      // if minZ is already 0, nothing to do
+      if (Math.abs(minZ) < 0.001) return;
+      
+      pushHistory();
+      handleUpdateObject(id, {
+          transform: {
+              ...obj.transform,
+              position: {
+                  ...obj.transform.position,
+                  z: obj.transform.position.z - minZ
+              }
+          }
+      });
+  };
+
   const handleSelectObject = (id: string | null | 'all', multiSelect: boolean = false) => {
       setState(prev => {
           let newSelectedIds = [...(prev.selectedIds || [])];
@@ -1064,6 +1184,7 @@ const getHighContrastColor = (): string => {
             onDuplicateObject={handleDuplicate}
             onMirrorObject={handleMirrorObject}
             onApplyScale={handleApplyScale}
+            onRepairObject={handleRepairObject}
             onAddPrimitive={handleAddPrimitive}
             onEraseWithObject={handleEraseWithObject}
             onSliceChange={(slice) => setState(prev => ({ ...prev, slice }))}
@@ -1082,6 +1203,7 @@ const getHighContrastColor = (): string => {
             onSnapToEdgeChange={(snap) => setState(prev => ({ ...prev, snapToEdge: snap }))}
             onSnapCentroids={handleSnapCentroids}
             onExportCombined={handleExport}
+            onExportAll={handleExportAll}
             onExportSeparate={handleExportSeparate}
             onSaveHistory={pushHistory}
             onAiAnalyze={async () => {
@@ -1173,71 +1295,101 @@ const getHighContrastColor = (): string => {
                        </div>
                        
                        <div>
-                          <span className="block text-[10px] text-slate-400 font-semibold mb-1">Abmessungen (mm)</span>
+                          <div className="flex items-center justify-between mb-1">
+                             <span className="block text-[10px] text-slate-400 font-semibold">Abmessungen (mm)</span>
+                             <button 
+                               onClick={() => setUniformScale(!uniformScale)}
+                               className={`p-1 rounded transition-colors ${uniformScale ? 'text-blue-400 bg-blue-500/10' : 'text-slate-500 hover:text-slate-300'}`}
+                               title="Proportionen beibehalten"
+                             >
+                               {uniformScale ? <Lock size={10} /> : <Unlock size={10} />}
+                             </button>
+                          </div>
                           <div className="grid grid-cols-3 gap-1">
-                             <div>
-                                <span className="text-[8px] text-slate-500 block">Breite (X)</span>
-                                <input 
-                                  type="number" 
-                                  step="0.1" 
-                                  value={parseFloat(((selectedObj.stats.boundingBox?.size?.x || 1) * Math.abs(selectedObj.transform.scale.x)).toFixed(2))}
-                                  onChange={(e) => {
-                                     const v = parseFloat(e.target.value);
-                                     if (!isNaN(v) && v > 0) {
-                                        const sign = selectedObj.transform.scale.x < 0 ? -1 : 1;
-                                        handleUpdateObject(selectedObj.id, { 
-                                           transform: { 
-                                              ...selectedObj.transform, 
-                                              scale: { ...selectedObj.transform.scale, x: sign * (v / (selectedObj.stats.boundingBox?.size?.x || 1)) } 
-                                           } 
-                                        });
-                                     }
-                                  }}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
-                                />
-                             </div>
-                             <div>
-                                <span className="text-[8px] text-slate-500 block">Höhe (Y)</span>
-                                <input 
-                                  type="number" 
-                                  step="0.1" 
-                                  value={parseFloat(((selectedObj.stats.boundingBox?.size?.y || 1) * Math.abs(selectedObj.transform.scale.y)).toFixed(2))}
-                                  onChange={(e) => {
-                                     const v = parseFloat(e.target.value);
-                                     if (!isNaN(v) && v > 0) {
-                                        const sign = selectedObj.transform.scale.y < 0 ? -1 : 1;
-                                        handleUpdateObject(selectedObj.id, { 
-                                           transform: { 
-                                              ...selectedObj.transform, 
-                                              scale: { ...selectedObj.transform.scale, y: sign * (v / (selectedObj.stats.boundingBox?.size?.y || 1)) } 
-                                           } 
-                                        });
-                                     }
-                                  }}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
-                                />
-                             </div>
-                             <div>
-                                <span className="text-[8px] text-slate-500 block">Dicke (Z)</span>
-                                <input 
-                                  type="number" 
-                                  step="0.1" 
-                                  value={parseFloat(((selectedObj.stats.boundingBox?.size?.z || 1) * Math.abs(selectedObj.transform.scale.z)).toFixed(2))}
-                                  onChange={(e) => {
-                                     const v = parseFloat(e.target.value);
-                                     if (!isNaN(v) && v > 0) {
-                                        const sign = selectedObj.transform.scale.z < 0 ? -1 : 1;
-                                        handleUpdateObject(selectedObj.id, { 
-                                           transform: { 
-                                              ...selectedObj.transform, 
-                                              scale: { ...selectedObj.transform.scale, z: sign * (v / (selectedObj.stats.boundingBox?.size?.z || 1)) } 
-                                           } 
-                                        });
-                                     }
-                                  }}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
-                                />
-                             </div>
+                             <DimensionInput
+                               label="Breite (X)"
+                               value={parseFloat(((selectedObj.stats.boundingBox?.size?.x || 1) * Math.abs(selectedObj.transform.scale.x)).toFixed(2))}
+                               onChange={(v) => {
+                                  const sign = selectedObj.transform.scale.x < 0 ? -1 : 1;
+                                  const newScaleX = sign * (v / (selectedObj.stats.boundingBox?.size?.x || 1));
+                                  if (uniformScale) {
+                                      const ratio = Math.abs(newScaleX / selectedObj.transform.scale.x);
+                                      handleUpdateObject(selectedObj.id, {
+                                          transform: {
+                                              ...selectedObj.transform,
+                                              scale: {
+                                                  x: newScaleX,
+                                                  y: selectedObj.transform.scale.y * ratio,
+                                                  z: selectedObj.transform.scale.z * ratio
+                                              }
+                                          }
+                                      });
+                                  } else {
+                                      handleUpdateObject(selectedObj.id, { 
+                                         transform: { 
+                                            ...selectedObj.transform, 
+                                            scale: { ...selectedObj.transform.scale, x: newScaleX } 
+                                         } 
+                                      });
+                                  }
+                               }}
+                             />
+                             <DimensionInput
+                               label="Höhe (Y)"
+                               value={parseFloat(((selectedObj.stats.boundingBox?.size?.y || 1) * Math.abs(selectedObj.transform.scale.y)).toFixed(2))}
+                               onChange={(v) => {
+                                  const sign = selectedObj.transform.scale.y < 0 ? -1 : 1;
+                                  const newScaleY = sign * (v / (selectedObj.stats.boundingBox?.size?.y || 1));
+                                  if (uniformScale) {
+                                      const ratio = Math.abs(newScaleY / selectedObj.transform.scale.y);
+                                      handleUpdateObject(selectedObj.id, {
+                                          transform: {
+                                              ...selectedObj.transform,
+                                              scale: {
+                                                  x: selectedObj.transform.scale.x * ratio,
+                                                  y: newScaleY,
+                                                  z: selectedObj.transform.scale.z * ratio
+                                              }
+                                          }
+                                      });
+                                  } else {
+                                      handleUpdateObject(selectedObj.id, { 
+                                         transform: { 
+                                            ...selectedObj.transform, 
+                                            scale: { ...selectedObj.transform.scale, y: newScaleY } 
+                                         } 
+                                      });
+                                  }
+                               }}
+                             />
+                             <DimensionInput
+                               label="Dicke (Z)"
+                               value={parseFloat(((selectedObj.stats.boundingBox?.size?.z || 1) * Math.abs(selectedObj.transform.scale.z)).toFixed(2))}
+                               onChange={(v) => {
+                                  const sign = selectedObj.transform.scale.z < 0 ? -1 : 1;
+                                  const newScaleZ = sign * (v / (selectedObj.stats.boundingBox?.size?.z || 1));
+                                  if (uniformScale) {
+                                      const ratio = Math.abs(newScaleZ / selectedObj.transform.scale.z);
+                                      handleUpdateObject(selectedObj.id, {
+                                          transform: {
+                                              ...selectedObj.transform,
+                                              scale: {
+                                                  x: selectedObj.transform.scale.x * ratio,
+                                                  y: selectedObj.transform.scale.y * ratio,
+                                                  z: newScaleZ
+                                              }
+                                          }
+                                      });
+                                  } else {
+                                      handleUpdateObject(selectedObj.id, { 
+                                         transform: { 
+                                            ...selectedObj.transform, 
+                                            scale: { ...selectedObj.transform.scale, z: newScaleZ } 
+                                         } 
+                                      });
+                                  }
+                               }}
+                             />
                           </div>
                        </div>
 
@@ -1315,8 +1467,12 @@ const getHighContrastColor = (): string => {
                                         });
                                      }
                                   }}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 mb-1 text-center font-mono focus:outline-none focus:border-blue-500"
                                 />
+                                <div className="flex gap-1">
+                                    <button onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, x: (selectedObj.transform.rotation.x + 90) % 360 } } })} className="flex-1 py-0.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded text-[8px] font-medium">+90°</button>
+                                    <button onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, x: (selectedObj.transform.rotation.x + 180) % 360 } } })} className="flex-1 py-0.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded text-[8px] font-medium">+180°</button>
+                                </div>
                              </div>
                              <div>
                                 <span className="text-[8px] text-slate-500 block">Y</span>
@@ -1332,8 +1488,12 @@ const getHighContrastColor = (): string => {
                                         });
                                      }
                                   }}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 mb-1 text-center font-mono focus:outline-none focus:border-blue-500"
                                 />
+                                <div className="flex gap-1">
+                                    <button onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, y: (selectedObj.transform.rotation.y + 90) % 360 } } })} className="flex-1 py-0.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded text-[8px] font-medium">+90°</button>
+                                    <button onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, y: (selectedObj.transform.rotation.y + 180) % 360 } } })} className="flex-1 py-0.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded text-[8px] font-medium">+180°</button>
+                                </div>
                              </div>
                              <div>
                                 <span className="text-[8px] text-slate-500 block">Z</span>
@@ -1349,14 +1509,27 @@ const getHighContrastColor = (): string => {
                                         });
                                      }
                                   }}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 text-center font-mono focus:outline-none focus:border-blue-500"
+                                  className="w-full bg-slate-800 border border-slate-700 rounded p-1 mb-1 text-center font-mono focus:outline-none focus:border-blue-500"
                                 />
+                                <div className="flex gap-1">
+                                    <button onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, z: (selectedObj.transform.rotation.z + 90) % 360 } } })} className="flex-1 py-0.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded text-[8px] font-medium">+90°</button>
+                                    <button onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, rotation: { ...selectedObj.transform.rotation, z: (selectedObj.transform.rotation.z + 180) % 360 } } })} className="flex-1 py-0.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded text-[8px] font-medium">+180°</button>
+                                </div>
                              </div>
                           </div>
                        </div>
-
+                       
+                       <div className="mb-3">
+                          <button
+                             onClick={() => handleAlignToFloor(selectedObj.id)}
+                             className="w-full py-2 bg-emerald-600/80 hover:bg-emerald-500 rounded-lg text-[10px] font-bold text-white transition-all flex items-center justify-center gap-2 border border-emerald-500/50"
+                          >
+                             Am Boden ausrichten (Z=0)
+                          </button>
+                       </div>
                        <div>
                           <span className="block text-[10px] text-slate-400 font-semibold mb-1">Spiegeln</span>
+
                           <div className="grid grid-cols-3 gap-1">
                              <button
                                onClick={() => handleUpdateObject(selectedObj.id, { transform: { ...selectedObj.transform, scale: { ...selectedObj.transform.scale, x: selectedObj.transform.scale.x * -1 } } })}

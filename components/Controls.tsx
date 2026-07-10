@@ -4,7 +4,7 @@ import { AppState, SceneObject, SliceState, SplitState } from '../types';
 import { primitiveNames, PrimitiveType } from '../services/primitiveService';
 import { 
   Download, Trash2, Box, Layers, Move, RefreshCw, Scissors, Sparkles, 
-  Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler
+  Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler, Activity
 } from 'lucide-react';
 
 interface ControlsProps {
@@ -34,8 +34,10 @@ interface ControlsProps {
   onSnapToEdgeChange: (snap: boolean) => void;
   onSnapCentroids: () => void;
   onExportCombined: (format: 'stl' | 'obj' | 'gltf') => void;
+  onExportAll: (format: 'stl' | 'obj' | 'gltf') => void;
   onExportSeparate: (format: 'stl' | 'obj' | 'gltf') => void;
   onAiAnalyze: () => void;
+  onRepairObject: (id: string) => void;
   onSaveHistory: () => void;
 }
 
@@ -78,7 +80,7 @@ const Slider: React.FC<{ label: string; value: number; min: number; max: number;
 );
 
 const Controls: React.FC<ControlsProps> = (props) => {
-  const { state, onSelect, onUpdateObject, onDeleteObject, onDuplicateObject, onSliceChange, onApplyScale, onBakeSlice, onSplitChange, onPerformSplit, onViewModeChange, onExportCombined, onExportSeparate, onAiAnalyze, onSaveHistory } = props;
+  const { state, onSelect, onUpdateObject, onDeleteObject, onDuplicateObject, onSliceChange, onApplyScale, onBakeSlice, onSplitChange, onPerformSplit, onViewModeChange, onExportCombined, onExportSeparate, onAiAnalyze, onSaveHistory, onRepairObject, onExportAll } = props;
   const [analyzing, setAnalyzing] = useState(false);
   const [exportFormat, setExportFormat] = useState<'stl' | 'obj' | 'gltf'>('stl');
   const selectedObj = state.objects.find(o => o.id === state.selectedId);
@@ -185,6 +187,14 @@ const Controls: React.FC<ControlsProps> = (props) => {
         >
           {analyzing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
           KI Druck-Check
+        </button>
+        <button 
+          disabled={!selectedObj}
+          onClick={() => { if (selectedObj) onRepairObject(selectedObj.id); }}
+          className="w-full mt-2 py-2 bg-emerald-700 hover:bg-emerald-600 rounded-lg text-[9px] font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-50 text-white"
+        >
+          <Activity size={12} />
+          Mesh Reparieren (Manifold-Check)
         </button>
       </ControlGroup>
 
@@ -687,8 +697,18 @@ const Controls: React.FC<ControlsProps> = (props) => {
             </button>
           ))}
         </div>
+        
+        <button 
+          disabled={state.objects.length === 0}
+          onClick={() => onExportAll(exportFormat)}
+          className="w-full py-2.5 flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-[11px] shadow-xl shadow-purple-500/30 transition-all disabled:opacity-50"
+        >
+          <Download size={14} />
+          Gesamte Szene ({exportFormat.toUpperCase()})
+        </button>
         <button 
           disabled={state.objects.filter(o => o.visible).length === 0}
+
           onClick={() => onExportCombined(exportFormat)}
           className="w-full py-2.5 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-[11px] shadow-xl shadow-blue-500/30 transition-all disabled:opacity-50"
         >
