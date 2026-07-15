@@ -1,1 +1,0 @@
-minkowski() { cube([10,10,10]); sphere(r=2, $fn=50); }
