@@ -1,9 +1,10 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import * as THREE from 'three';
-import { Upload, Download, Box, Activity, Package, Scissors, Sparkles, Move, Layers, UploadCloud, Undo2, Redo2, Lock, Unlock } from 'lucide-react';
+import { Upload, Download, Box, Activity, Package, Scissors, Sparkles, Move, Layers, UploadCloud, Undo2, Redo2, Lock, Unlock, HelpCircle } from 'lucide-react';
 import Viewer from './components/Viewer';
 import Controls from './components/Controls';
+import { HelpModal } from './components/HelpModal';
 import { AppState, SceneObject, SliceState, TransformationState, SplitState, ExtendState } from './types';
 import { stlService } from './services/stlService';
 
@@ -169,9 +170,28 @@ const App: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPartsMenuOpen, setIsPartsMenuOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [loadingText, setLoadingText] = useState<string | null>(null);
+  const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; objectId: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isProcessing && loadingProgress !== null && loadingProgress > 0 && loadingProgress < 90) {
+      timer = setInterval(() => {
+        setLoadingProgress(prev => {
+          if (prev === null) return null;
+          // Asymptotic progress towards 90%
+          const remaining = 90 - prev;
+          const step = Math.max(0.5, remaining * 0.05);
+          return Math.min(90, prev + step);
+        });
+      }, 500);
+    }
+    return () => clearInterval(timer);
+  }, [isProcessing, loadingProgress]);
 
   useEffect(() => {
     const handleGlobalClick = () => {
@@ -250,47 +270,107 @@ const getHighContrastColor = (): string => {
   return palette[Math.floor(Math.random() * palette.length)];
 };
 
+
+
+  
   const processFile = async (file: File) => {
-    if (file.name.toLowerCase().endsWith('.stlc')) {
-      await loadProject(file);
-      return;
-    }
-    if (!file.name.toLowerCase().endsWith('.stl')) return;
-    
+    setErrorMsg(null);
+    setIsProcessing(true);
+    setLoadingText(`Lade ${file.name}...`);
+    setLoadingProgress(0);
+    const progressTimer = setInterval(() => {
+        setLoadingProgress(prev => {
+            if (prev === null) return null;
+            if (prev >= 95) return prev;
+            return prev + Math.max(0.1, (95 - prev) * 0.05);
+        });
+    }, 500);
+
     try {
-      const buffer = await file.arrayBuffer();
-      let geo = await stlService.loadFromBuffer(buffer);
-      
-      geo = validateAndRepairGeometry(geo);
-      
-      if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) {
-        throw new Error("Ungültige oder unvollständige STL-Geometrie.");
-      }
 
-      geo.center();
-      const stats = stlService.calculateStats(geo);
-      
-      const newObj: SceneObject = {
-        id: Math.random().toString(36).substr(2, 9),
-        name: file.name.replace('.stl', ''),
-        geometry: geo,
-        transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
-        visible: true,
-        color: getHighContrastColor(),
-        stats
-      };
+        if (file.name.toLowerCase().endsWith('.stlc')) {
+          await loadProject(file);
+          return;
+        }
+        
+        let buffer: ArrayBuffer;
+        
+        
+        if (file.name.toLowerCase().endsWith('.scad')) {
+          setLoadingText(`Kompiliere ${file.name} (OpenSCAD)...`);
+          try {
+            const scadCode = await file.text();
+            const response = await fetch('/api/compile-scad', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scadCode })
+            });
+            
+            if (!response.ok) {
+              let errorMsg = `HTTP Error ${response.status}`;
+              try {
+                  const errorData = await response.json();
+                  errorMsg = errorData.error || errorMsg;
+              } catch(e) {}
+              throw new Error(errorMsg);
+            }
+            
+            buffer = await response.arrayBuffer();
+          } catch (err: any) {
+            console.error("Error compiling SCAD:", err);
+            setErrorMsg(`Fehler beim Kompilieren von "${file.name}": ${err.message || err.toString()}`);
+            return;
+          }
+        } else if (file.name.toLowerCase().endsWith('.stl')) {
 
-      pushHistory();
-      setState(prev => ({
-        ...prev,
-        objects: [...prev.objects, newObj],
-        selectedId: newObj.id
-      }));
+          buffer = await file.arrayBuffer();
+        } else {
+          return;
+        }
+        
+        setLoadingText(`Importiere ${file.name}...`);
+        let geo = await stlService.loadFromBuffer(buffer);
+        
+        geo = validateAndRepairGeometry(geo);
+        
+        if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) {
+          throw new Error("Ungültige oder unvollständige STL-Geometrie.");
+        }
+
+        geo.center();
+        const stats = stlService.calculateStats(geo);
+        
+        const newObj: SceneObject = {
+          id: Math.random().toString(36).substr(2, 9),
+          name: file.name.replace('.stl', '').replace('.scad', ''),
+          geometry: geo,
+          color: getHighContrastColor(),
+          transform: {
+            position: { x: 0, y: 0, z: 0 },
+            rotation: { x: 0, y: 0, z: 0 },
+            scale: { x: 1, y: 1, z: 1 }
+          },
+          visible: true,
+          stats
+        };
+
+        pushHistory();
+        setState(prev => ({
+          ...prev,
+          objects: [...prev.objects, newObj],
+          selectedId: newObj.id
+        }));
     } catch (err: any) {
-      console.error("Error loading STL:", err);
-      setErrorMsg(`Fehler beim Laden von "${file.name}": ${err.message || err.toString()}`);
+        console.error("Error loading file:", err);
+        setErrorMsg(`Fehler beim Laden von "${file.name}": ${err.message || err.toString()}`);
+    } finally {
+        clearInterval(progressTimer);
+        setIsProcessing(false);
+        setLoadingText(null);
+        setLoadingProgress(null);
     }
   };
+
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -489,7 +569,7 @@ const getHighContrastColor = (): string => {
               geometry: repaired,
               stats: stlService.calculateStats(repaired)
           });
-      } catch (err) {
+      } catch (err: any) {
           console.error("Repair failed", err);
       } finally {
           setIsProcessing(false);
@@ -666,6 +746,257 @@ const getHighContrastColor = (): string => {
       }
   };
 
+  
+  
+  const handleUngroupObjects = async () => {
+      const selectedIds = state.selectedIds || [];
+      if (selectedIds.length !== 1) return;
+      
+      const objToUngroup = state.objects.find(o => o.id === selectedIds[0]);
+      if (!objToUngroup || !objToUngroup.originalParts || objToUngroup.originalParts.length === 0) return;
+      
+      setIsProcessing(true);
+      
+      try {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          const THREE = await import('three');
+          
+          // The group object might have been moved.
+          // Its original components were stored with their world transforms at the time of grouping,
+          // AND the grouped object was created at 0,0,0.
+          // If the grouped object has a transform, we must apply it to the children.
+          const groupMatrix = new THREE.Matrix4().compose(
+              new THREE.Vector3(objToUngroup.transform.position.x, objToUngroup.transform.position.y, objToUngroup.transform.position.z),
+              new THREE.Quaternion().setFromEuler(new THREE.Euler(
+                  THREE.MathUtils.degToRad(objToUngroup.transform.rotation.x), 
+                  THREE.MathUtils.degToRad(objToUngroup.transform.rotation.y), 
+                  THREE.MathUtils.degToRad(objToUngroup.transform.rotation.z)
+              )),
+              new THREE.Vector3(objToUngroup.transform.scale.x, objToUngroup.transform.scale.y, objToUngroup.transform.scale.z)
+          );
+
+          const newObjects = objToUngroup.originalParts.map(part => {
+              // Create matrix for part's original transform
+              const partMatrix = new THREE.Matrix4().compose(
+                  new THREE.Vector3(part.transform.position.x, part.transform.position.y, part.transform.position.z),
+                  new THREE.Quaternion().setFromEuler(new THREE.Euler(
+                      THREE.MathUtils.degToRad(part.transform.rotation.x), 
+                      THREE.MathUtils.degToRad(part.transform.rotation.y), 
+                      THREE.MathUtils.degToRad(part.transform.rotation.z)
+                  )),
+                  new THREE.Vector3(part.transform.scale.x, part.transform.scale.y, part.transform.scale.z)
+              );
+              
+              // Apply group's matrix over part's matrix
+              const finalMatrix = new THREE.Matrix4().multiplyMatrices(groupMatrix, partMatrix);
+              
+              // Decompose back to position, rotation, scale
+              const position = new THREE.Vector3();
+              const quaternion = new THREE.Quaternion();
+              const scale = new THREE.Vector3();
+              finalMatrix.decompose(position, quaternion, scale);
+              const euler = new THREE.Euler().setFromQuaternion(quaternion);
+
+              return {
+                  ...part,
+                  id: Math.random().toString(36).substr(2, 9), // new IDs to avoid conflicts
+                  transform: {
+                      position: { x: position.x, y: position.y, z: position.z },
+                      rotation: { 
+                          x: THREE.MathUtils.radToDeg(euler.x), 
+                          y: THREE.MathUtils.radToDeg(euler.y), 
+                          z: THREE.MathUtils.radToDeg(euler.z) 
+                      },
+                      scale: { x: scale.x, y: scale.y, z: scale.z }
+                  },
+                  visible: true
+              };
+          });
+
+          pushHistory();
+          setState(prev => {
+              const newIds = newObjects.map(o => o.id);
+              return {
+                  ...prev,
+                  objects: prev.objects.filter(o => o.id !== objToUngroup.id).concat(newObjects),
+                  selectedId: newIds[0],
+                  selectedIds: newIds
+              };
+          });
+      } catch (err: any) {
+          console.error("Ungroup Error:", err);
+          setErrorMsg(`Fehler beim Gruppierung aufheben: ${err.message || err.toString()}`);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+
+  const handleGroupObjects = async () => {
+      const selectedIds = state.selectedIds || [];
+      if (selectedIds.length < 2) return;
+      
+      const objectsToGroup = state.objects.filter(o => selectedIds.includes(o.id));
+      
+      setIsProcessing(true);
+      
+      try {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
+          const THREE = await import('three');
+
+          const geometries = objectsToGroup.map(obj => {
+              const geo = obj.geometry.clone();
+              const matrix = new THREE.Matrix4().compose(
+                  new THREE.Vector3(obj.transform.position.x, obj.transform.position.y, obj.transform.position.z),
+                  new THREE.Quaternion().setFromEuler(new THREE.Euler(
+                      THREE.MathUtils.degToRad(obj.transform.rotation.x), 
+                      THREE.MathUtils.degToRad(obj.transform.rotation.y), 
+                      THREE.MathUtils.degToRad(obj.transform.rotation.z)
+                  )),
+                  new THREE.Vector3(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z)
+              );
+              geo.applyMatrix4(matrix);
+              return geo;
+          });
+
+          const mergedGeo = mergeGeometries(geometries, false);
+          
+          if (mergedGeo.attributes.position && mergedGeo.attributes.position.count === 0) {
+              mergedGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0);
+              mergedGeo.boundingBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0));
+          } else {
+              mergedGeo.computeVertexNormals();
+          }
+
+          const newObj = {
+              id: Math.random().toString(36).substr(2, 9),
+              name: `Gruppe (${objectsToGroup.length} Teile)`,
+              geometry: mergedGeo,
+              transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+              visible: true,
+              color: objectsToGroup[0].color || state.globalColor,
+              stats: (await import('./services/stlService')).stlService.calculateStats(mergedGeo),
+              originalParts: objectsToGroup
+          };
+
+          pushHistory();
+          setState(prev => ({
+              ...prev,
+              objects: prev.objects.filter(o => !selectedIds.includes(o.id)).concat([newObj]),
+              selectedId: newObj.id,
+              selectedIds: [newObj.id]
+          }));
+      } catch (err: any) {
+          console.error("Group Error:", err);
+          setErrorMsg(`Fehler beim Gruppieren: ${err.message || err.toString()}`);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+
+  
+  const handleExplodeView = async () => {
+      const visibleObjects = state.objects.filter(o => o.visible);
+      if (visibleObjects.length < 2) {
+          setErrorMsg("Mindestens 2 sichtbare Objekte erforderlich.");
+          return;
+      }
+      
+      setIsProcessing(true);
+      try {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          const THREE = await import('three');
+          
+          let globalCenter = new THREE.Vector3();
+          
+          // Calculate global center of mass
+          visibleObjects.forEach(obj => {
+              const center = new THREE.Vector3();
+              const box = new THREE.Box3();
+              const geo = obj.geometry.clone();
+              const matrix = new THREE.Matrix4().compose(
+                  new THREE.Vector3(obj.transform.position.x, obj.transform.position.y, obj.transform.position.z),
+                  new THREE.Quaternion().setFromEuler(new THREE.Euler(
+                      THREE.MathUtils.degToRad(obj.transform.rotation.x), 
+                      THREE.MathUtils.degToRad(obj.transform.rotation.y), 
+                      THREE.MathUtils.degToRad(obj.transform.rotation.z)
+                  )),
+                  new THREE.Vector3(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z)
+              );
+              geo.applyMatrix4(matrix);
+              geo.computeBoundingBox();
+              if (geo.boundingBox) {
+                  geo.boundingBox.getCenter(center);
+                  globalCenter.add(center);
+              }
+          });
+          
+          globalCenter.divideScalar(visibleObjects.length);
+          
+          // Apply explosion offset
+          const explosionDistance = 30; // 30mm base offset
+
+          pushHistory();
+          setState(prev => ({
+              ...prev,
+              objects: prev.objects.map(obj => {
+                  if (!obj.visible) return obj;
+                  
+                  const center = new THREE.Vector3();
+                  const geo = obj.geometry.clone();
+                  const matrix = new THREE.Matrix4().compose(
+                      new THREE.Vector3(obj.transform.position.x, obj.transform.position.y, obj.transform.position.z),
+                      new THREE.Quaternion().setFromEuler(new THREE.Euler(
+                          THREE.MathUtils.degToRad(obj.transform.rotation.x), 
+                          THREE.MathUtils.degToRad(obj.transform.rotation.y), 
+                          THREE.MathUtils.degToRad(obj.transform.rotation.z)
+                      )),
+                      new THREE.Vector3(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z)
+                  );
+                  geo.applyMatrix4(matrix);
+                  geo.computeBoundingBox();
+                  
+                  let offset = new THREE.Vector3(0, 1, 0); // Default direction
+                  if (geo.boundingBox) {
+                      geo.boundingBox.getCenter(center);
+                      const dir = new THREE.Vector3().subVectors(center, globalCenter);
+                      if (dir.lengthSq() > 0.001) {
+                          dir.normalize();
+                          offset = dir;
+                      }
+                      
+                      const size = new THREE.Vector3();
+                      geo.boundingBox.getSize(size);
+                      
+                      // Scale offset by object size + base distance
+                      const maxDim = Math.max(size.x, size.y, size.z);
+                      offset.multiplyScalar(explosionDistance + maxDim * 0.5);
+                  }
+                  
+                  return {
+                      ...obj,
+                      transform: {
+                          ...obj.transform,
+                          position: {
+                              x: obj.transform.position.x + offset.x,
+                              y: obj.transform.position.y + offset.y,
+                              z: obj.transform.position.z + offset.z
+                          }
+                      }
+                  };
+              })
+          }));
+      } catch (err: any) {
+          console.error("Explode Error:", err);
+          setErrorMsg(`Fehler bei Explosionsansicht: ${err.message || err.toString()}`);
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+
   const handleMergeObjects = async () => {
       const visibleObjects = state.objects.filter(o => o.visible);
       if (visibleObjects.length < 2) {
@@ -801,6 +1132,23 @@ const getHighContrastColor = (): string => {
     } catch (err: any) {
       setErrorMsg(`Fehler beim Laden: ${err.message}`);
     }
+  };
+
+  
+  const handleUpdateObjects = (updatesList: {id: string, updates: Partial<SceneObject>}[]) => {
+      setState(prev => {
+          const newObjects = [...prev.objects];
+          let changed = false;
+          updatesList.forEach(({id, updates}) => {
+              const idx = newObjects.findIndex(o => o.id === id);
+              if (idx !== -1) {
+                  newObjects[idx] = { ...newObjects[idx], ...updates };
+                  changed = true;
+              }
+          });
+          if (!changed) return prev;
+          return { ...prev, objects: newObjects };
+      });
   };
 
   const handleUpdateObject = (id: string, updates: Partial<SceneObject>) => {
@@ -1167,6 +1515,33 @@ const getHighContrastColor = (): string => {
         </div>
       )}
 
+      {/* Loading Overlay */}
+      {isProcessing && (
+        <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm pointer-events-auto animate-in fade-in duration-200">
+          <div className="flex flex-col items-center gap-4 text-white p-8 bg-slate-900 rounded-3xl shadow-2xl border border-slate-700/50 w-80">
+            <Activity size={48} className="animate-pulse text-blue-500" />
+            <div className="text-lg font-bold text-center w-full truncate">{loadingText || "Verarbeite..."}</div>
+            
+            <div className="w-full h-3 bg-slate-800 rounded-full overflow-hidden mt-2 relative border border-slate-700">
+              {loadingProgress !== null ? (
+                <div 
+                  className="absolute top-0 bottom-0 left-0 bg-blue-500 transition-all duration-300 ease-out"
+                  style={{ width: `${Math.round(loadingProgress)}%` }}
+                />
+              ) : (
+                <div className="absolute top-0 bottom-0 left-0 w-1/2 bg-blue-500 rounded-full animate-[ping_1.5s_cubic-bezier(0,0,0.2,1)_infinite]" />
+              )}
+            </div>
+            {loadingProgress !== null && (
+              <div className="text-xs text-slate-400 font-mono mt-1 text-center">
+                 {Math.round(loadingProgress)}%
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+
       <aside className="w-80 h-full bg-slate-900 border-r border-slate-800 z-10 shadow-2xl flex flex-col">
         <div className="p-6 border-b border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -1180,6 +1555,7 @@ const getHighContrastColor = (): string => {
             state={state}
             onSelect={handleSelectObject}
             onUpdateObject={handleUpdateObject}
+            onUpdateObjects={handleUpdateObjects}
             onDeleteObject={handleDelete}
             onDuplicateObject={handleDuplicate}
             onMirrorObject={handleMirrorObject}
@@ -1194,6 +1570,7 @@ const getHighContrastColor = (): string => {
             onExtendChange={(extend) => setState(prev => ({ ...prev, extend }))}
             onPerformExtend={handlePerformExtend}
             onMergeObjects={handleMergeObjects}
+            onExplodeView={handleExplodeView}
             onBooleanChange={(booleanState) => setState(prev => ({ ...prev, boolean: booleanState }))}
             onPerformBoolean={handlePerformBoolean}
             onViewModeChange={(mode) => setState(prev => ({ ...prev, viewMode: mode }))}
@@ -1202,6 +1579,8 @@ const getHighContrastColor = (): string => {
             onTransformModeChange={(mode) => setState(prev => ({ ...prev, transformMode: mode }))}
             onSnapToEdgeChange={(snap) => setState(prev => ({ ...prev, snapToEdge: snap }))}
             onSnapCentroids={handleSnapCentroids}
+            onGroupObjects={handleGroupObjects}
+            onUngroupObjects={handleUngroupObjects}
             onExportCombined={handleExport}
             onExportAll={handleExportAll}
             onExportSeparate={handleExportSeparate}
@@ -1217,13 +1596,17 @@ const getHighContrastColor = (): string => {
         </div>
       </aside>
 
+      
+      {isHelpOpen && <HelpModal onClose={() => setIsHelpOpen(false)} />}
+      
       <main className="flex-1 relative bg-slate-950">
+
         <div className="absolute top-6 left-6 z-20 flex gap-4">
             <div className="flex items-center gap-4 bg-slate-900/80 backdrop-blur-xl border border-slate-800/50 px-5 py-2.5 rounded-2xl shadow-2xl transition-all hover:border-blue-500/50">
-                <input type="file" accept=".stl,.stlc" multiple onChange={handleFileUpload} ref={fileInputRef} className="hidden" id="stl-upload" />
+                <input type="file" accept=".stl,.stlc,.scad" multiple onChange={handleFileUpload} ref={fileInputRef} className="hidden" id="stl-upload" />
                 <label htmlFor="stl-upload" className="flex items-center gap-2.5 text-sm font-bold cursor-pointer text-slate-300 hover:text-white transition-all group">
                     <Upload size={18} className="text-blue-500 group-hover:scale-110 transition-transform" />
-                    Teile hinzufügen (oder .stlc laden)
+                    Teile hinzufügen (STL, SCAD, STLC)
                 </label>
             </div>
             
@@ -1235,7 +1618,16 @@ const getHighContrastColor = (): string => {
                 Projekt speichern (.stlc)
             </button>
 
+            
+            <button 
+                onClick={() => setIsHelpOpen(true)}
+                className="flex items-center justify-center bg-slate-900/80 backdrop-blur-xl border border-slate-800/50 w-10 h-10 rounded-2xl shadow-2xl transition-all hover:border-slate-500/50 text-slate-300 hover:text-white"
+                title="Hilfe & Tastaturkürzel"
+            >
+                <HelpCircle size={18} />
+            </button>
             <div className="flex items-center bg-slate-900/80 backdrop-blur-xl border border-slate-800/50 rounded-2xl shadow-2xl p-1 overflow-hidden">
+
                 <button 
                   onClick={handleUndo} 
                   disabled={pastObjects.length === 0}

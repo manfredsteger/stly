@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { AppState, SceneObject, SliceState, SplitState } from '../types';
 import { primitiveNames, PrimitiveType } from '../services/primitiveService';
 import { 
-  Download, Trash2, Box, Layers, Move, RefreshCw, Scissors, Sparkles, 
+  Download, Trash2, Box, Layers, Move, RefreshCw, Scissors, Sparkles, Lock, Unlock, 
   Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler, Activity
 } from 'lucide-react';
 
@@ -22,6 +22,7 @@ interface ControlsProps {
   onExtendChange: (extend: import('../types').ExtendState) => void;
   onPerformExtend: () => void;
   onMergeObjects: () => void;
+  onExplodeView: () => void;
   onSubtractObjects: () => void;
   onBooleanChange: (booleanState: import('../types').BooleanState) => void;
   onPerformBoolean: () => void;
@@ -33,6 +34,8 @@ interface ControlsProps {
   onTransformModeChange: (mode: 'translate' | 'rotate') => void;
   onSnapToEdgeChange: (snap: boolean) => void;
   onSnapCentroids: () => void;
+  onGroupObjects: () => void;
+  onUngroupObjects: () => void;
   onExportCombined: (format: 'stl' | 'obj' | 'gltf') => void;
   onExportAll: (format: 'stl' | 'obj' | 'gltf') => void;
   onExportSeparate: (format: 'stl' | 'obj' | 'gltf') => void;
@@ -83,6 +86,8 @@ const Controls: React.FC<ControlsProps> = (props) => {
   const { state, onSelect, onUpdateObject, onDeleteObject, onDuplicateObject, onSliceChange, onApplyScale, onBakeSlice, onSplitChange, onPerformSplit, onViewModeChange, onExportCombined, onExportSeparate, onAiAnalyze, onSaveHistory, onRepairObject, onExportAll } = props;
   const [analyzing, setAnalyzing] = useState(false);
   const [exportFormat, setExportFormat] = useState<'stl' | 'obj' | 'gltf'>('stl');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
   const selectedObj = state.objects.find(o => o.id === state.selectedId);
 
   const combinedStats = React.useMemo(() => {
@@ -155,15 +160,57 @@ const Controls: React.FC<ControlsProps> = (props) => {
             >
               <div className="flex items-center gap-2 truncate">
                 <Box size={14} className={(state.selectedIds || []).includes(obj.id) ? 'text-blue-400' : 'text-slate-500'} />
-                <span className={`text-[11px] truncate ${(state.selectedIds || []).includes(obj.id) ? 'text-blue-100 font-bold' : (!obj.visible ? 'text-slate-600 line-through' : 'text-slate-400')}`}>
-                  {obj.name}
-                </span>
+                
+                {editingId === obj.id ? (
+                    <input 
+                        type="text" 
+                        value={editingName} 
+                        autoFocus
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => setEditingName(e.target.value)}
+                        onBlur={() => {
+                            if (editingName.trim() && editingName.trim() !== obj.name) {
+                                props.onUpdateObject(obj.id, { name: editingName.trim() });
+                            }
+                            setEditingId(null);
+                        }}
+                        onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                                if (editingName.trim() && editingName.trim() !== obj.name) {
+                                    props.onUpdateObject(obj.id, { name: editingName.trim() });
+                                }
+                                setEditingId(null);
+                            } else if (e.key === 'Escape') {
+                                setEditingId(null);
+                            }
+                        }}
+                        className="bg-slate-800 text-[11px] text-white px-1 py-0.5 rounded outline-none border border-blue-500 w-full"
+                    />
+                ) : (
+                    <span 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingId(obj.id);
+                            setEditingName(obj.name);
+                        }}
+                        className={`text-[11px] truncate cursor-text ${(state.selectedIds || []).includes(obj.id) ? 'text-blue-100 font-bold' : (!obj.visible ? 'text-slate-600 line-through' : 'text-slate-400')}`}
+                        title="Klicken zum Umbenennen"
+                    >
+                        {obj.name}
+                    </span>
+                )}
+
               </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                  <button onClick={(e) => { e.stopPropagation(); onUpdateObject(obj.id, { visible: !obj.visible }); }} className="p-1 hover:text-white text-slate-500">
                     {obj.visible ? <Eye size={12}/> : <EyeOff size={12}/>}
                  </button>
-                 <button onClick={(e) => { e.stopPropagation(); onDuplicateObject(obj.id); }} className="p-1 hover:text-white text-slate-500">
+                 
+                 <button onClick={(e) => { e.stopPropagation(); props.onUpdateObject(obj.id, { locked: !obj.locked }); }} className={`p-1 hover:text-white ${obj.locked ? 'text-amber-500' : 'text-slate-500'}`}>
+                    {obj.locked ? <Lock size={12}/> : <Unlock size={12}/>}
+                 </button>
+                 <button onClick={(e) => { e.stopPropagation(); props.onDuplicateObject(obj.id); }} className="p-1 hover:text-white text-slate-500">
+
                     <Copy size={12}/>
                  </button>
                  <button onClick={(e) => { e.stopPropagation(); onDeleteObject(obj.id); }} className="p-1 hover:text-red-400 text-slate-500">
@@ -215,90 +262,94 @@ const Controls: React.FC<ControlsProps> = (props) => {
       </ControlGroup>
 
       {/* 2. TRANSFORM FOR SELECTED */}
-      {(state.selectedIds || []).length === 2 && (
-        <ControlGroup title="Zwei Objekte ausgewählt" icon={<Layers size={14} />}>
+            {(state.selectedIds || []).length >= 2 && (
+        <ControlGroup title="Mehrere Objekte ausgewählt" icon={<Layers size={14} />}>
             <p className="text-[10px] text-slate-400 mb-2">
-                Sie können die Zentren der Bounding-Boxen beider Objekte aufeinander ausrichten oder Objekte voneinander abziehen (Durchbohren).
+                Aktionen für mehrere ausgewählte Objekte.
             </p>
             <div className="flex flex-col gap-2">
                 <button 
-                    onClick={props.onSnapCentroids}
-                    className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
+                    onClick={props.onGroupObjects}
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
                 >
-                    <Move size={12} />
-                    Zentren zusammenfügen
+                    <Package size={12} />
+                    Auswahl gruppieren (schnell)
                 </button>
-                <div className="border border-slate-700/50 rounded-lg p-2 bg-slate-900/30">
-                    <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-bold text-slate-300">Boolean (CSG)</span>
-                        <input 
-                            type="checkbox" 
-                            checked={state.boolean?.enabled || false}
-                            onChange={(e) => {
-                                const selectedIds = state.selectedIds || [];
-                                props.onBooleanChange({ 
-                                    ...(state.boolean || { operation: 'subtract', preview: true }), 
-                                    enabled: e.target.checked,
-                                    targetId: selectedIds[0] || null,
-                                    cutterId: selectedIds[1] || null
-                                });
-                            }}
-                            className="w-3 h-3"
-                        />
-                    </div>
-                    {state.boolean?.enabled && (
-                        <div className="flex flex-col gap-2">
-                            <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-slate-400">Operation:</span>
-                                <select 
-                                    value={state.boolean.operation}
-                                    onChange={(e) => props.onBooleanChange({ ...state.boolean, operation: e.target.value as any })}
-                                    className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-slate-200"
-                                >
-                                    <option value="subtract">Ausschneiden (Subtract)</option>
-                                    <option value="intersect">Schnittmenge (Intersect)</option>
-                                    <option value="union">Vereinigen (Union)</option>
-                                </select>
-                            </div>
-                            <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-slate-400">Ziel (Bleibt erhalten):</span>
-                                <span className="truncate w-24 text-right">{state.objects.find(o => o.id === state.boolean.targetId)?.name || '-'}</span>
-                            </div>
-                            <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-slate-400">Werkzeug (Schneidet):</span>
-                                <span className="truncate w-24 text-right">{state.objects.find(o => o.id === state.boolean.cutterId)?.name || '-'}</span>
-                            </div>
-                            <button 
-                                onClick={() => {
-                                    props.onBooleanChange({
-                                        ...state.boolean,
-                                        targetId: state.boolean.cutterId,
-                                        cutterId: state.boolean.targetId
+                {(state.selectedIds || []).length === 2 && (
+                  <>
+                    <button 
+                        onClick={props.onSnapCentroids}
+                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2 mt-2"
+                    >
+                        <Move size={12} />
+                        Zentren zusammenfügen
+                    </button>
+                    <div className="border border-slate-700/50 rounded-lg p-2 bg-slate-900/30 mt-2">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] font-bold text-slate-300">Boolean (CSG)</span>
+                            <input 
+                                type="checkbox" 
+                                checked={state.boolean?.enabled || false}
+                                onChange={(e) => {
+                                    const selectedIds = state.selectedIds || [];
+                                    props.onBooleanChange({ 
+                                        ...(state.boolean || { operation: 'subtract', preview: true }), 
+                                        enabled: e.target.checked,
+                                        targetId: selectedIds[0],
+                                        cutterId: selectedIds[1]
                                     });
                                 }}
-                                className="w-full py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] text-slate-300 transition-colors"
-                            >
-                                Ziel / Werkzeug tauschen
-                            </button>
-                            <label className="flex items-center gap-2 text-[9px] text-slate-400">
-                                <input 
-                                    type="checkbox" 
-                                    checked={state.boolean.preview} 
-                                    onChange={(e) => props.onBooleanChange({ ...state.boolean, preview: e.target.checked })}
-                                    className="w-2.5 h-2.5"
-                                />
-                                Preview anzeigen
-                            </label>
-                            <button 
-                                onClick={props.onPerformBoolean}
-                                className="w-full py-2 mt-1 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
-                            >
-                                <Scissors size={12} />
-                                Anwenden
-                            </button>
+                                className="accent-blue-500 cursor-pointer"
+                            />
                         </div>
-                    )}
-                </div>
+                        {state.boolean?.enabled && (
+                            <div className="flex flex-col gap-2 mt-2">
+                                <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={() => {
+                                            const selectedIds = state.selectedIds || [];
+                                            props.onBooleanChange({
+                                                ...state.boolean,
+                                                targetId: selectedIds[1],
+                                                cutterId: selectedIds[0]
+                                            });
+                                        }}
+                                        className="text-[9px] bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded w-full flex items-center justify-center gap-1"
+                                    >
+                                        <RefreshCw size={10} />
+                                        Rollen tauschen
+                                    </button>
+                                </div>
+                                <select 
+                                    className="w-full bg-slate-950 border border-slate-700 text-[10px] text-white rounded p-1.5 focus:border-blue-500 outline-none"
+                                    value={state.boolean.operation}
+                                    onChange={(e) => props.onBooleanChange({ ...state.boolean, operation: e.target.value as any })}
+                                >
+                                    <option value="subtract">Subtraktion (Bewege 2 in 1)</option>
+                                    <option value="union">Vereinigung (CSG)</option>
+                                    <option value="intersect">Schnittmenge</option>
+                                </select>
+                                <label className="flex items-center gap-2 mt-1 cursor-pointer">
+                                    <input 
+                                        type="checkbox"
+                                        checked={state.boolean.preview}
+                                        onChange={(e) => props.onBooleanChange({ ...state.boolean, preview: e.target.checked })}
+                                        className="accent-blue-500"
+                                    />
+                                    <span className="text-[10px] text-slate-400">Live Vorschau</span>
+                                </label>
+                                <button 
+                                    onClick={props.onPerformBoolean}
+                                    className="w-full py-1.5 bg-red-600/80 hover:bg-red-500 rounded text-[10px] font-bold text-white mt-1 flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <Scissors size={10} />
+                                    Anwenden
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                  </>
+                )}
             </div>
         </ControlGroup>
       )}
@@ -306,7 +357,28 @@ const Controls: React.FC<ControlsProps> = (props) => {
       {selectedObj && (state.selectedIds || []).length <= 1 && (
         <ControlGroup title={`Transform: ${selectedObj.name}`} icon={<Move size={14} />}>
            
-           <div className="flex bg-slate-900/50 p-1 rounded-lg gap-1 border border-slate-700/30 mb-3">
+           
+           {selectedObj.originalParts && selectedObj.originalParts.length > 0 && (
+             <div className="mb-3">
+               <button 
+                  onClick={props.onUngroupObjects}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
+               >
+                  <Package size={12} />
+                  Gruppierung aufheben
+               </button>
+             </div>
+           )}
+           
+           {selectedObj.locked && (
+             <div className="mb-3 p-2 bg-amber-900/20 border border-amber-800/50 rounded-lg text-[10px] text-amber-200 flex items-center justify-center gap-2">
+                <Lock size={12} />
+                Objekt ist gesperrt.
+             </div>
+           )}
+           <div className={`flex bg-slate-900/50 p-1 rounded-lg gap-1 border border-slate-700/30 mb-3 ${selectedObj.locked ? 'opacity-50 pointer-events-none' : ''}`}>
+
+
               <button onClick={() => props.onTransformModeChange('translate')} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.transformMode==='translate' ? 'bg-blue-600 text-white':'text-slate-500 hover:text-slate-300'}`}>VERSCHIEBEN</button>
               <button onClick={() => props.onTransformModeChange('rotate')} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.transformMode==='rotate' ? 'bg-blue-600 text-white':'text-slate-500 hover:text-slate-300'}`}>DREHEN</button>
               <button onClick={() => props.onTransformModeChange('scale')} className={`flex-1 py-1 rounded text-[9px] font-bold ${state.transformMode==='scale' ? 'bg-blue-600 text-white':'text-slate-500 hover:text-slate-300'}`}>SKALIEREN</button>
@@ -440,8 +512,18 @@ const Controls: React.FC<ControlsProps> = (props) => {
               </div>
            </div>
 
+           
            <div className="mt-4 pt-4 border-t border-slate-700/50">
                <button 
+                  onClick={props.onExplodeView}
+                  disabled={state.objects.filter(o => o.visible).length < 2 || analyzing}
+                  className="w-full py-2.5 mb-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 transition-colors"
+               >
+                 <Sparkles size={14} />
+                 Explosionsansicht (Sichtbare)
+               </button>
+               <button 
+ 
                   onClick={props.onMergeObjects}
                   disabled={state.objects.filter(o => o.visible).length < 2 || analyzing}
                   className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 transition-colors"

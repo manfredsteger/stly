@@ -39,8 +39,10 @@ export interface SceneObject {
   geometry: THREE.BufferGeometry;
   transform: TransformationState;
   visible: boolean;
+  locked?: boolean;
   color: string;
   stats: MeshStats;
+  originalParts?: SceneObject[];
 }
 
 export interface SplitState {

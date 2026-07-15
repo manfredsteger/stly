@@ -274,88 +274,23 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
 
     return () => {
       resizeObserver.disconnect();
-      if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
-      }
-      renderer.dispose();
-    };
-  }, []); // END OF INIT USE-EFFECT
-
-  // RENDER OBJECTS
-  useEffect(() => {
-    if (!objectsGroupRef.current) return;
-    const group = objectsGroupRef.current;
-    
-    // Clear old
-    while(group.children.length > 0) {
-      group.remove(group.children[0]);
-    }
-    if (multiSelectGroupRef.current) {
-        while(multiSelectGroupRef.current.children.length > 0) {
-            multiSelectGroupRef.current.remove(multiSelectGroupRef.current.children[0]);
-        }
-    }
-
-    state.objects.forEach(obj => {
-      if (!obj.visible) return;
       
-      const material = new THREE.MeshStandardMaterial({
-        color: obj.color,
-        roughness: 0.4,
-        metalness: 0.1,
-        side: THREE.DoubleSide
-      });
-
-      if (state.viewMode === 'wireframe') {
-        material.wireframe = true;
-      }
-
-      let visualObject: THREE.Object3D = new THREE.Mesh(obj.geometry, material);
-      visualObject.userData = { id: obj.id };
-
-      // Apply transformations
-      visualObject.position.set(obj.transform.position.x, obj.transform.position.y, obj.transform.position.z);
-      visualObject.rotation.set(
-        THREE.MathUtils.degToRad(obj.transform.rotation.x),
-        THREE.MathUtils.degToRad(obj.transform.rotation.y),
-        THREE.MathUtils.degToRad(obj.transform.rotation.z)
-      );
-      visualObject.scale.set(obj.transform.scale.x, obj.transform.scale.y, obj.transform.scale.z);
-
-      if (state.viewMode === 'xray') {
-         material.transparent = true;
-         material.opacity = 0.3;
-         material.depthWrite = false;
-      }
-
-      group.add(visualObject);
-    });
-
-    const currentCount = state.objects.length;
-    const prevCount = prevObjectsCountRef.current;
-    if (currentCount > prevCount) {
-      setTimeout(() => {
-        fitCameraToScene();
-      }, 50);
-    }
-    prevObjectsCountRef.current = currentCount;
-  }, [state.objects, state.viewMode, state.slice, state.boolean]);
-
-
-  // TRANSFORM CONTROLS SELECTION
-  useEffect(() => {
     if (transformControlsRef.current) {
-      transformControlsRef.current.setMode(state.transformMode || 'translate');
       if (state.selectedIds && state.selectedIds.length > 1 && !state.measure?.enabled && multiSelectGroupRef.current) {
         
+        // Un-attach and clear the group first
         transformControlsRef.current.detach();
         
+        // Find all active meshes
         const activeMeshes = objectsGroupRef.current.children.filter(c => state.selectedIds.includes(c.userData?.id));
+        
+        // Calculate common bounding box
         const box = new THREE.Box3();
         activeMeshes.forEach(mesh => {
             box.expandByObject(mesh);
         });
         
+        // Move multiSelectGroup to the center
         const center = new THREE.Vector3();
         box.getCenter(center);
         while(multiSelectGroupRef.current.children.length > 0){ multiSelectGroupRef.current.remove(multiSelectGroupRef.current.children[0]); }
@@ -363,19 +298,31 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
         multiSelectGroupRef.current.rotation.set(0, 0, 0);
         multiSelectGroupRef.current.scale.set(1, 1, 1);
         
+        // We only want to add the gizmo to multiSelectGroupRef and NOT re-parent the visualObjects 
+        // to avoid React rendering bugs. Actually, if we use attach() on multiSelectGroupRef it might work
+        // until the next render... Wait! A better way is to attach to a dummy mesh, and on change, update 
+        // state directly (handled above in dragging-changed, wait, if we don't attach, children won't move).
+        // Let's just re-parent them here for the duration of the selection. React's objectsGroupRef.current.add(visualObject)
+        // adds them back on next render.
+        
         activeMeshes.forEach(mesh => {
             multiSelectGroupRef.current.attach(mesh);
         });
-        
+
+        // Add visual bounding box around the group
+        const groupHelper = new THREE.Box3Helper(box, new THREE.Color(0xffa500));
+        multiSelectGroupRef.current.userData.helper = groupHelper;
+        // Don't add helper to group because it will scale with it. Add to scene.
+        // Wait, if it's added to group, we can just use BoxHelper on the group!
         const boxHelper = new THREE.BoxHelper(multiSelectGroupRef.current, 0xffa500);
         multiSelectGroupRef.current.add(boxHelper);
-        
+
         if (transformControlsRef.current.object !== multiSelectGroupRef.current) {
             transformControlsRef.current.attach(multiSelectGroupRef.current);
         }
       } else if (state.selectedId && !state.measure?.enabled) {
         while(multiSelectGroupRef.current && multiSelectGroupRef.current.children.length > 0){ multiSelectGroupRef.current.remove(multiSelectGroupRef.current.children[0]); }
-        
+        // Re-add any items left in multiSelectGroupRef back to objectsGroupRef (just in case, though React does it)
         const selectedObj = state.objects.find(o => o.id === state.selectedId);
         const activeMesh = objectsGroupRef.current.children.find(c => c.userData?.id === state.selectedId);
         if (activeMesh && selectedObj && !selectedObj.locked) {
@@ -389,7 +336,21 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
         transformControlsRef.current.detach();
       }
     }
-  }, [state.objects, state.selectedId, state.selectedIds, state.measure?.enabled, state.transformMode]);
+ else {
+        transformControlsRef.current.detach();
+      }
+    }
+
+
+    const currentCount = state.objects.length;
+    const prevCount = prevObjectsCountRef.current;
+    if (currentCount > prevCount) {
+      setTimeout(() => {
+        fitCameraToScene();
+      }, 50);
+    }
+    prevObjectsCountRef.current = currentCount;
+  }, [state.objects, state.selectedId, state.selectedIds, state.slice, state.viewMode, state.boolean]);
 
   // Measure Visuals
   useEffect(() => {
