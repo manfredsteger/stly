@@ -29,7 +29,7 @@ docker compose up --build
 *(To run it safely in the background as a daemon, use `docker compose up -d --build`)*
 
 ### 3. Access the App
-Open your web browser and navigate to: **http://localhost:3000**
+Open your web browser and navigate to: **http://localhost:3333**
 
 ### 4. Optional: Enable AI Analysis Features
 To utilize the AI analysis feature, you can provide a Gemini API Key:
@@ -66,7 +66,7 @@ If you prefer to run the app natively on your machine:
    ```bash
    npm run dev
    ```
-5. Navigate to http://localhost:3000.
+5. Navigate to http://localhost:3333.
 
 ---
 

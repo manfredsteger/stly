@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
     image: stl-editor-pro:latest
     ports:
-      - "3000:3000"
+      - "3333:3000"
     environment:
       - NODE_ENV=production
       - PORT=3000
