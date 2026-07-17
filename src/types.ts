@@ -62,6 +62,15 @@ export interface ExtendState {
   amount: number;
 }
 
+
+export interface AnimationState {
+  enabled: boolean;
+  axis: 'x' | 'y' | 'z';
+  distance: number;
+  speed: number;
+  playing: boolean;
+}
+
 export interface MeasureState {
   enabled: boolean;
   p1: Vector3 | null;
@@ -95,6 +104,7 @@ export interface AppState {
   split: SplitState;
   extend: ExtendState;
   measure: MeasureState;
+  animation?: AnimationState;
   align: AlignState;
   boolean: BooleanState;
   viewMode: 'wireframe' | 'solid' | 'points' | 'transparent';

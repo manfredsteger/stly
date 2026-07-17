@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { AppState, SceneObject } from '../types';
+import { findConnectedEdgeSegments, getClosestVertexOnSegment } from '../services/edgeDetectionService';
 
 interface ViewerProps {
   state: AppState;
@@ -29,14 +30,18 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
   const controlsRef = useRef<OrbitControls | null>(null);
   const transformControlsRef = useRef<TransformControls | null>(null);
   const prevObjectsCountRef = useRef(0);
-  const callbackRefs = useRef({ state, onUpdateObject, onUpdateObjects, onSaveHistory });
+  const callbackRefs = useRef({ state, onUpdateObject, onUpdateObjects, onSaveHistory, onMeasureClick, onAlignClick, onClickObject, onContextMenu });
+  const animationRef = useRef(state.animation);
   const snapTargetRef = useRef<THREE.Vector3 | null>(null);
   const snapMarkerRef = useRef<THREE.Mesh | null>(null);
   const edgeHighlightRef = useRef<THREE.LineSegments | null>(null);
+  const measureHoverRef = useRef<THREE.Mesh | null>(null);
+  const measureHoverPointRef = useRef<THREE.Vector3 | null>(null);
 
   useEffect(() => {
-    callbackRefs.current = { state, onUpdateObject, onUpdateObjects, onSaveHistory };
-  }, [state, onUpdateObject, onSaveHistory]);
+    callbackRefs.current = { state, onUpdateObject, onUpdateObjects, onSaveHistory, onMeasureClick, onAlignClick, onClickObject, onContextMenu };
+    animationRef.current = state.animation;
+  }, [state, onUpdateObject, onUpdateObjects, onSaveHistory, onMeasureClick, onAlignClick, onClickObject, onContextMenu]);
 
   const fitCameraToScene = () => {
     if (!sceneRef.current || !cameraRef.current || !objectsGroupRef.current) return;
@@ -146,6 +151,12 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
     const edgeGeo = new THREE.BufferGeometry();
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x00ffff, depthTest: false, linewidth: 2 });
     const edgeHighlight = new THREE.LineSegments(edgeGeo, edgeMat);
+    const measureHoverMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, depthTest: false });
+    const measureHoverMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 16, 16), measureHoverMat);
+    measureHoverMesh.renderOrder = 999;
+    measureHoverMesh.visible = false;
+    scene.add(measureHoverMesh);
+    measureHoverRef.current = measureHoverMesh;
     edgeHighlight.visible = false;
     edgeHighlight.renderOrder = 999;
     scene.add(edgeHighlight);
@@ -162,8 +173,36 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
       
       if (event.value) { // Started dragging
         if (currSaveHistory) currSaveHistory();
+        
+        // Make object(s) transparent for live preview
+        const obj = transformControls.object;
+        if (obj) {
+           obj.traverse((child) => {
+              if (child instanceof THREE.Mesh && child.material) {
+                 child.userData.origMaterial = child.material;
+                 const transMat = child.material.clone();
+                 transMat.transparent = true;
+                 transMat.opacity = 0.5;
+                 transMat.depthTest = false;
+                 transMat.depthWrite = false;
+                 child.material = transMat;
+                 child.userData.origRenderOrder = child.renderOrder;
+                 child.renderOrder = 999;
+              }
+           });
+        }
       } else { // Stopped dragging
         const obj = transformControls.object;
+        if (obj) {
+           obj.traverse((child) => {
+              if (child instanceof THREE.Mesh && child.userData.origMaterial) {
+                 child.material.dispose();
+                 child.material = child.userData.origMaterial;
+                 delete child.userData.origMaterial;
+                 child.renderOrder = child.userData.origRenderOrder || 0;
+              }
+           });
+        }
         if (obj === multiSelectGroupRef.current && obj) {
             // Apply transformations back to children world positions
             if (currUpdateMultiple) {
@@ -263,13 +302,168 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
     });
     
     resizeObserver.observe(container);
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
 
+    const onPointerDown = (event: PointerEvent) => {
+      // Only handle left click
+      if (event.button !== 0) return;
+      if (transformControls.dragging) return;
+      
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      raycaster.setFromCamera(mouse, camera);
+      
+      const { state: currState, onMeasureClick: currMeasureClick, onClickObject: currClickObject } = callbackRefs.current;
+      
+      // Raycast against the objectsGroupRef
+      if (objectsGroupRef.current) {
+        const intersects = raycaster.intersectObjects(objectsGroupRef.current.children, true);
+        if (intersects.length > 0) {
+           let point = intersects[0].point;
+           
+           if (currState.measure?.enabled && currMeasureClick) {
+             // If we clicked a mesh and we want to measure, try to snap to nearest vertex
+             const mesh = intersects[0].object as THREE.Mesh;
+             if (measureHoverPointRef.current) {
+                point = measureHoverPointRef.current.clone();
+             } else if (mesh.geometry && mesh.geometry.attributes.position) {
+               const posAttr = mesh.geometry.attributes.position;
+               const face = intersects[0].face;
+               if (face) {
+                 const vA = new THREE.Vector3().fromBufferAttribute(posAttr, face.a).applyMatrix4(mesh.matrixWorld);
+                 const vB = new THREE.Vector3().fromBufferAttribute(posAttr, face.b).applyMatrix4(mesh.matrixWorld);
+                 const vC = new THREE.Vector3().fromBufferAttribute(posAttr, face.c).applyMatrix4(mesh.matrixWorld);
+                 const dA = vA.distanceTo(point);
+                 const dB = vB.distanceTo(point);
+                 const dC = vC.distanceTo(point);
+                 if (dA <= dB && dA <= dC) point = vA;
+                 else if (dB <= dA && dB <= dC) point = vB;
+                 else point = vC;
+               }
+             }
+             currMeasureClick(point);
+             return;
+           }
+           
+           if (currClickObject) {
+             // Find root object ID
+             let obj: THREE.Object3D | null = intersects[0].object;
+             while(obj && obj.parent !== objectsGroupRef.current) {
+               obj = obj.parent;
+             }
+             if (obj && obj.userData?.id) {
+               currClickObject(obj.userData.id, event.shiftKey);
+               return;
+             }
+           }
+        } else {
+           if (!currState.measure?.enabled && currClickObject) {
+             currClickObject(null, event.shiftKey);
+           }
+        }
+      }
+    };
+    
+    
+    const onPointerMove = (event: PointerEvent) => {
+      const currState = callbackRefs.current.state;
+      if (!currState.measure?.enabled && !currState.align?.enabled) {
+          if (edgeHighlightRef.current) edgeHighlightRef.current.visible = false;
+          if (measureHoverRef.current) measureHoverRef.current.visible = false;
+          measureHoverPointRef.current = null;
+          return;
+      }
+      
+      const rect = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, camera);
+      
+      if (objectsGroupRef.current) {
+        const intersects = raycaster.intersectObjects(objectsGroupRef.current.children, true);
+        if (intersects.length > 0) {
+           const mesh = intersects[0].object as THREE.Mesh;
+           const point = intersects[0].point;
+           
+           if (currState.measure?.enabled) {
+               // Edge detection
+               const segments = findConnectedEdgeSegments(mesh, point);
+               if (segments.length > 0 && edgeHighlightRef.current) {
+                  edgeHighlightRef.current.geometry.setFromPoints(segments);
+                  edgeHighlightRef.current.visible = true;
+                  edgeHighlightRef.current.material.color.setHex(0xff00ff); // Magenta for measure
+               } else if (edgeHighlightRef.current) {
+                  edgeHighlightRef.current.visible = false;
+               }
+               
+               // Vertex snapping
+               const closestVertex = getClosestVertexOnSegment(mesh, point);
+               if (closestVertex && measureHoverRef.current) {
+                  measureHoverRef.current.position.copy(closestVertex);
+                  measureHoverRef.current.visible = true;
+                  measureHoverPointRef.current = closestVertex;
+               } else if (measureHoverRef.current) {
+                  measureHoverRef.current.visible = false;
+                  measureHoverPointRef.current = null;
+               }
+           }
+        } else {
+           if (edgeHighlightRef.current) edgeHighlightRef.current.visible = false;
+           if (measureHoverRef.current) measureHoverRef.current.visible = false;
+           measureHoverPointRef.current = null;
+        }
+      }
+    };
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+
+
+
+    const clock = new THREE.Clock();
+    
     const animate = () => {
       requestAnimationFrame(animate);
       controls.update();
       cameraLight.position.copy(camera.position);
+      
+      const anim = animationRef.current;
+      const state = callbackRefs.current.state;
+      
+      if (anim && anim.enabled && anim.playing && state.selectedId && objectsGroupRef.current) {
+         const time = clock.getElapsedTime();
+         // find the object in state
+         const objData = state.objects.find(o => o.id === state.selectedId);
+         // find the mesh
+         const mesh = objectsGroupRef.current.children.find(c => c.userData?.id === state.selectedId);
+         
+         if (objData && mesh) {
+             const offset = Math.sin(time * anim.speed) * anim.distance;
+             // Reset to base first
+             mesh.position.set(objData.transform.position.x, objData.transform.position.y, objData.transform.position.z);
+             
+             if (anim.axis === 'x') mesh.position.x += offset;
+             if (anim.axis === 'y') mesh.position.y += offset;
+             if (anim.axis === 'z') mesh.position.z += offset;
+         }
+      } else if (anim && (!anim.enabled || !anim.playing) && state.selectedId && objectsGroupRef.current) {
+         // Reset position if paused
+         const objData = state.objects.find(o => o.id === state.selectedId);
+         const mesh = objectsGroupRef.current.children.find(c => c.userData?.id === state.selectedId);
+         if (objData && mesh) {
+            mesh.position.set(objData.transform.position.x, objData.transform.position.y, objData.transform.position.z);
+         }
+      }
+
       renderer.render(scene, camera);
     };
+
     animate();
 
     return () => {
@@ -277,6 +471,7 @@ const Viewer: React.FC<ViewerProps> = ({ state, onMeasureClick, onAlignClick, on
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.dispose();
     };
   }, []); // END OF INIT USE-EFFECT

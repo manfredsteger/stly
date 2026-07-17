@@ -1236,7 +1236,60 @@ const getHighContrastColor = (): string => {
       link.click();
   };
 
+
+  const handleScaleFromMeasure = (ratio: number) => {
+    pushHistory();
+    setState(prev => {
+      // Find the object to scale. If one is selected, scale that. Otherwise scale all.
+      const objectsToScale = prev.selectedId 
+        ? [prev.selectedId] 
+        : (prev.selectedIds?.length ? prev.selectedIds : prev.objects.map(o => o.id));
+      
+      const newObjects = prev.objects.map(obj => {
+        if (objectsToScale.includes(obj.id)) {
+          return {
+            ...obj,
+            transform: {
+              ...obj.transform,
+              scale: {
+                x: obj.transform.scale.x * ratio,
+                y: obj.transform.scale.y * ratio,
+                z: obj.transform.scale.z * ratio,
+              }
+            }
+          };
+        }
+        return obj;
+      });
+      
+      // Also scale the measured points themselves so the visual line expands with it!
+      const newMeasure = { ...prev.measure };
+      if (newMeasure.p1 && newMeasure.p2 && prev.selectedId) {
+        // Find the selected object before scale
+        const selectedObj = prev.objects.find(o => o.id === prev.selectedId);
+        if (selectedObj) {
+           // We'll scale the points relative to the object's origin if we scaled the object
+           // Wait, simple proportional scaling of the distance is all we need to show the new distance.
+           // However, to update the exact positions of p1 and p2:
+           // It's a bit complex since they might be world coordinates. We can just scale them from the origin of the selected object.
+           const origin = new THREE.Vector3(selectedObj.transform.position.x, selectedObj.transform.position.y, selectedObj.transform.position.z);
+           const dp1 = new THREE.Vector3(newMeasure.p1.x, newMeasure.p1.y, newMeasure.p1.z).sub(origin).multiplyScalar(ratio).add(origin);
+           const dp2 = new THREE.Vector3(newMeasure.p2.x, newMeasure.p2.y, newMeasure.p2.z).sub(origin).multiplyScalar(ratio).add(origin);
+           newMeasure.p1 = dp1;
+           newMeasure.p2 = dp2;
+        }
+      }
+
+      return {
+        ...prev,
+        objects: newObjects,
+        measure: newMeasure
+      };
+    });
+  };
+
   const handleMeasureClick = (point: THREE.Vector3) => {
+
     setState(prev => {
         if (!prev.measure.enabled) return prev;
         
@@ -1561,6 +1614,7 @@ const getHighContrastColor = (): string => {
             onMirrorObject={handleMirrorObject}
             onApplyScale={handleApplyScale}
             onRepairObject={handleRepairObject}
+               onScaleFromMeasure={handleScaleFromMeasure}
             onAddPrimitive={handleAddPrimitive}
             onEraseWithObject={handleEraseWithObject}
             onSliceChange={(slice) => setState(prev => ({ ...prev, slice }))}
@@ -1575,6 +1629,7 @@ const getHighContrastColor = (): string => {
             onPerformBoolean={handlePerformBoolean}
             onViewModeChange={(mode) => setState(prev => ({ ...prev, viewMode: mode }))}
             onMeasureChange={(measure) => setState(prev => ({ ...prev, measure }))}
+            onAnimationChange={(animation) => setState(prev => ({ ...prev, animation }))}
             onAlignChange={(align) => setState(prev => ({ ...prev, align }))}
             onTransformModeChange={(mode) => setState(prev => ({ ...prev, transformMode: mode }))}
             onSnapToEdgeChange={(snap) => setState(prev => ({ ...prev, snapToEdge: snap }))}

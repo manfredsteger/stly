@@ -4,8 +4,7 @@ import { AppState, SceneObject, SliceState, SplitState } from '../types';
 import { primitiveNames, PrimitiveType } from '../services/primitiveService';
 import { 
   Download, Trash2, Box, Layers, Move, RefreshCw, Scissors, Sparkles, Lock, Unlock, 
-  Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler, Activity
-} from 'lucide-react';
+  Loader2, Minimize2, Maximize2, Eye, EyeOff, Plus, Copy, Package, Ruler, Activity} from 'lucide-react';
 
 interface ControlsProps {
   state: AppState;
@@ -30,6 +29,7 @@ interface ControlsProps {
   onEraseWithObject: () => void;
   onViewModeChange: (mode: AppState['viewMode']) => void;
   onMeasureChange: (measure: import('../types').MeasureState) => void;
+  onAnimationChange?: (animation: import('../types').AnimationState) => void;
   onAlignChange: (align: import('../types').AlignState) => void;
   onTransformModeChange: (mode: 'translate' | 'rotate') => void;
   onSnapToEdgeChange: (snap: boolean) => void;
@@ -42,6 +42,7 @@ interface ControlsProps {
   onAiAnalyze: () => void;
   onRepairObject: (id: string) => void;
   onSaveHistory: () => void;
+  onScaleFromMeasure?: (ratio: number) => void;
 }
 
 import * as THREE from 'three';
@@ -83,6 +84,8 @@ const Slider: React.FC<{ label: string; value: number; min: number; max: number;
 );
 
 const Controls: React.FC<ControlsProps> = (props) => {
+  const [targetDistance, setTargetDistance] = React.useState<string>('');
+  const [propScale, setPropScale] = React.useState<string>('100');
   const { state, onSelect, onUpdateObject, onDeleteObject, onDuplicateObject, onSliceChange, onApplyScale, onBakeSlice, onSplitChange, onPerformSplit, onViewModeChange, onExportCombined, onExportSeparate, onAiAnalyze, onSaveHistory, onRepairObject, onExportAll } = props;
   const [analyzing, setAnalyzing] = useState(false);
   const [exportFormat, setExportFormat] = useState<'stl' | 'obj' | 'gltf'>('stl');
@@ -411,6 +414,37 @@ const Controls: React.FC<ControlsProps> = (props) => {
                              }}
                              className="bg-slate-800 text-[10px] text-slate-200 p-1 rounded border border-slate-700 w-full" />
                   </label>
+                  <label className="flex flex-col col-span-3 mt-1">
+                      <span className="text-[8px] text-slate-500">Proportional Skalieren (%)</span>
+                      <div className="flex gap-2">
+                        <input type="number" step="1" 
+                               value={propScale}
+                               onChange={(e) => setPropScale(e.target.value)}
+                               className="bg-slate-800 text-[10px] text-slate-200 p-1 rounded border border-slate-700 w-full" />
+                        <button 
+                          onClick={() => {
+                              const v = parseFloat(propScale);
+                              if (!isNaN(v) && v > 0) {
+                                  const ratio = v / 100;
+                                  props.onSaveHistory();
+                                  onUpdateObject(selectedObj.id, { 
+                                    transform: { 
+                                      ...selectedObj.transform, 
+                                      scale: { 
+                                        x: selectedObj.transform.scale.x * ratio,
+                                        y: selectedObj.transform.scale.y * ratio, 
+                                        z: selectedObj.transform.scale.z * ratio 
+                                      } 
+                                    } 
+                                  });
+                                  setPropScale('100');
+                              }
+                          }}
+                          className="bg-blue-600 hover:bg-blue-500 text-white rounded px-2 text-[10px] font-bold transition-colors">
+                          Skalieren
+                        </button>
+                      </div>
+                  </label>
                   <label className="flex flex-col">
                       <span className="text-[8px] text-slate-500">Y (Höhe)</span>
                       <input type="number" step="0.1" 
@@ -721,6 +755,34 @@ const Controls: React.FC<ControlsProps> = (props) => {
                        <span className="font-mono text-cyan-400 font-semibold text-lg">
                          {displayDist.toFixed(2)} {state.measure.unit === 'in' ? 'in' : 'mm'}
                        </span>
+                       
+                       <div className="mt-3 pt-3 border-t border-slate-700/30">
+                         <span className="text-[10px] text-slate-400 block mb-1">Skalieren auf Ziel-Distanz ({state.measure.unit === 'in' ? 'in' : 'mm'})</span>
+                         <div className="flex gap-2">
+                           <input 
+                             type="number" 
+                             value={targetDistance} 
+                             onChange={(e) => setTargetDistance(e.target.value)}
+                             className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-cyan-500"
+                             placeholder={`z.B. 100`}
+                           />
+                           <button 
+                             onClick={() => {
+                               const target = parseFloat(targetDistance);
+                               if (!isNaN(target) && target > 0) {
+                                 const ratio = target / displayDist;
+                                 if (props.onScaleFromMeasure) {
+                                   props.onScaleFromMeasure(ratio);
+                                   setTargetDistance('');
+                                 }
+                               }
+                             }}
+                             className="bg-cyan-600 hover:bg-cyan-500 text-white rounded px-3 py-1 text-xs font-medium transition-colors"
+                           >
+                             Skalieren
+                           </button>
+                         </div>
+                       </div>
                     </div>
                    );
                 })()}
@@ -728,6 +790,75 @@ const Controls: React.FC<ControlsProps> = (props) => {
            </div>
         )}
       </ControlGroup>
+
+      
+      {/* ANIMATION */}
+      {selectedObj && (
+      <ControlGroup title="Test-Passung (Animation)" icon={<Activity size={14} />}>
+         <div className="flex items-center justify-between mb-4">
+            <span className="text-[11px] text-slate-300 font-medium">Bauteil animieren</span>
+            <button 
+                onClick={() => props.onAnimationChange?.({
+                    enabled: !state.animation?.enabled,
+                    axis: state.animation?.axis || 'x',
+                    distance: state.animation?.distance || 100,
+                    speed: state.animation?.speed || 2,
+                    playing: false
+                })}
+                className={`w-8 h-4 rounded-full transition-colors relative ${state.animation?.enabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+            >
+                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${state.animation?.enabled ? 'left-4.5' : 'left-0.5'}`} />
+            </button>
+        </div>
+        
+        {state.animation?.enabled && (
+           <div className="space-y-3 animate-in fade-in zoom-in-95 duration-200 p-3 bg-slate-900/30 rounded-lg border border-slate-700/30">
+              <label className="flex flex-col">
+                  <span className="text-[10px] text-slate-400 font-bold mb-1">Achse</span>
+                  <div className="flex bg-slate-800 p-0.5 rounded gap-0.5">
+                    {['x', 'y', 'z'].map(ax => (
+                       <button key={ax} 
+                          onClick={() => props.onAnimationChange?.({ ...state.animation!, axis: ax as 'x'|'y'|'z' })}
+                          className={`flex-1 py-1 rounded text-[10px] uppercase font-bold ${state.animation?.axis === ax ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}
+                       >
+                         {ax}
+                       </button>
+                    ))}
+                  </div>
+              </label>
+
+              <label className="flex flex-col mt-2">
+                  <span className="text-[10px] text-slate-400 font-bold mb-1 flex justify-between">
+                     Distanz: <span className="text-indigo-400">{state.animation.distance} mm</span>
+                  </span>
+                  <input type="range" min="10" max="500" step="10" 
+                     value={state.animation.distance}
+                     onChange={(e) => props.onAnimationChange?.({ ...state.animation!, distance: parseFloat(e.target.value) })}
+                     className="w-full accent-indigo-500"
+                  />
+              </label>
+              
+              <label className="flex flex-col mt-2">
+                  <span className="text-[10px] text-slate-400 font-bold mb-1 flex justify-between">
+                     Geschwindigkeit: <span className="text-indigo-400">{state.animation.speed}</span>
+                  </span>
+                  <input type="range" min="0.1" max="10" step="0.1" 
+                     value={state.animation.speed}
+                     onChange={(e) => props.onAnimationChange?.({ ...state.animation!, speed: parseFloat(e.target.value) })}
+                     className="w-full accent-indigo-500"
+                  />
+              </label>
+              
+              <button 
+                 onClick={() => props.onAnimationChange?.({ ...state.animation!, playing: !state.animation?.playing })}
+                 className={`w-full mt-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${state.animation.playing ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
+              >
+                 {state.animation.playing ? 'Pause' : 'Play'}
+              </button>
+           </div>
+        )}
+      </ControlGroup>
+      )}
 
       {/* ALIGN / SNAP */}
       <ControlGroup title="Ausrichten" icon={<Move size={14} />}>
